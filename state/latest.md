@@ -1,4 +1,4 @@
-# AutistBoar Status — 2026-02-12
+# ChadBoar Status — 2026-02-12
 
 **Current Balance:** 14.0 SOL ($1183.0 USD)
 **Daily Exposure:** 0.0 SOL (0.0% of pot)

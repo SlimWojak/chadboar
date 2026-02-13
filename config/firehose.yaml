@@ -1,4 +1,4 @@
-# AutistBoar — Data Firehose Configuration
+# ChadBoar — Data Firehose Configuration
 # API endpoints, rate limits, and RPC fallback chain.
 
 # Solana RPC (fallback chain — rotate on 429/timeout)

@@ -1,4 +1,4 @@
-# AutistBoar Heartbeat Checklist
+# ChadBoar Heartbeat Checklist
 
 Follow these steps IN ORDER on every heartbeat. Do not skip steps.
 Do not improvise. Do not add steps. This is the cycle.

@@ -1,4 +1,4 @@
-"""State management for AutistBoar.
+"""State management for ChadBoar.
 
 Reads and writes state/state.json — the single source of truth for
 portfolio state, positions, daily exposure, and halt status.
@@ -103,7 +103,7 @@ def update_latest(state: State) -> None:
         else 0.0
     )
 
-    content = f"""# AutistBoar — Latest State
+    content = f"""# ChadBoar — Latest State
 Updated: {now}
 
 ## Portfolio

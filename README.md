@@ -1,4 +1,4 @@
-# 🐗 AutistBoar — Solana Memecoin Scout
+# 🐗 ChadBoar — Solana Memecoin Scout
 
 An autonomous Solana memecoin trading scout powered by [OpenClaw](https://openclaw.ai).
 Runs headless on a VPS, makes intelligent trading decisions on low-cap tokens,

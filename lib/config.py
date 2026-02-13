@@ -1,4 +1,4 @@
-"""Configuration loader for AutistBoar.
+"""Configuration loader for ChadBoar.
 
 Loads YAML config files from config/ directory.
 """

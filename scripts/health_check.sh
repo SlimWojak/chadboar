@@ -1,5 +1,5 @@
 #!/bin/bash
-# AutistBoar Health Check
+# ChadBoar Health Check
 # Validates environment, dependencies, API keys, and core guards
 # Run on boot or when diagnosing system issues
 
@@ -8,7 +8,7 @@ set -e
 WORKSPACE="/home/autistboar/chadboar"
 cd "$WORKSPACE"
 
-echo "🐗 AutistBoar Health Check"
+echo "🐗 ChadBoar Health Check"
 echo "=========================="
 echo ""
 

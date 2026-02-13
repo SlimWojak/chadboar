@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AutistBoar — VPS Bootstrap Script (Idempotent)
+# ChadBoar — VPS Bootstrap Script (Idempotent)
 # Run as root on a fresh Ubuntu 24.04 server (Hostinger, Singapore)
 #
 # Usage: sudo bash bootstrap.sh
@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-echo "=== AutistBoar VPS Bootstrap ==="
+echo "=== ChadBoar VPS Bootstrap ==="
 echo "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ── 1. System user ──────────────────────────────────────────────────
@@ -144,4 +144,4 @@ echo "  6. Run: openclaw gateway --verbose  (test)"
 echo "  7. Fund burner wallet"
 echo "  8. Monitor via Telegram"
 echo ""
-echo "🐗 AutistBoar is ready to scout."
+echo "🐗 ChadBoar is ready to scout."

@@ -1,4 +1,4 @@
-# AutistBoar Skills Overview
+# ChadBoar Skills Overview
 
 **Last Updated:** 2026-02-11  
 **Total Skills:** 7 (6 active + 1 whitelisted reference)

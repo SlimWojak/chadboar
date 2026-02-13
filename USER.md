@@ -1,6 +1,6 @@
 # User — G
 
-G is the sovereign operator. They own AutistBoar, fund the pot, and have final
+G is the sovereign operator. They own ChadBoar, fund the pot, and have final
 authority over all trading decisions above $100.
 
 ## How to Address G

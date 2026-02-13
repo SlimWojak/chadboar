@@ -1,7 +1,7 @@
 [project]
 name = "chadboar"
 version = "0.1.0"
-description = "AutistBoar — Solana memecoin scout powered by OpenClaw"
+description = "ChadBoar — Autistic mofo degen refinery powered by Grok + OpenClaw"
 requires-python = ">=3.12"
 license = {text = "MIT"}
 

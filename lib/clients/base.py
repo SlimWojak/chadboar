@@ -1,4 +1,4 @@
-"""Base HTTP client for AutistBoar API layer.
+"""Base HTTP client for ChadBoar API layer.
 
 Provides:
 - Rate limiting (per-endpoint token bucket)

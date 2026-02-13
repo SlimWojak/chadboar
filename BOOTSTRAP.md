@@ -1,6 +1,6 @@
-# AutistBoar — Bootstrap Procedure
+# ChadBoar — Bootstrap Procedure
 
-This file defines how AutistBoar initializes on fresh deployment or after a hard reset.
+This file defines how ChadBoar initializes on fresh deployment or after a hard reset.
 
 ## Initial Deployment
 
