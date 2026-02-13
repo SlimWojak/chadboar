@@ -1,0 +1,22 @@
+{
+  "starting_balance_sol": 14.0,
+  "current_balance_sol": 14.0,
+  "current_balance_usd": 1183.0,
+  "sol_price_usd": 84.5,
+  "positions": [],
+  "daily_exposure_sol": 0.0,
+  "daily_date": "2026-02-10",
+  "daily_loss_pct": 0.0,
+  "consecutive_losses": 0,
+  "halted": false,
+  "halted_at": "",
+  "halt_reason": "",
+  "total_trades": 0,
+  "total_wins": 0,
+  "total_losses": 0,
+  "last_trade_time": "",
+  "last_heartbeat_time": "2026-02-11T00:25:39.884363",
+  "dry_run_mode": true,
+  "dry_run_cycles_completed": 4,
+  "dry_run_target_cycles": 10
+}

@@ -1,0 +1,104 @@
+// AutistBoar — OpenClaw Configuration Template
+// Copy to ~/.openclaw/openclaw.json on VPS.
+// Replace <PLACEHOLDERS> with real values.
+// JSON5 format (comments + trailing commas allowed).
+{
+  // ── API KEY (via OpenRouter) ──────────────────────────────────────
+  env: {
+    OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}",
+  },
+
+  // ── AGENT CONFIG ──────────────────────────────────────────────────
+  agents: {
+    defaults: {
+      workspace: "/home/autistboar/autisticboar",
+
+      // Chat personality: Sonnet (the face G talks to)
+      model: {
+        primary: "openrouter/anthropic/claude-sonnet-4-5",
+        fallbacks: [
+          "openrouter/deepseek/deepseek-r1",
+          "openrouter/google/gemini-2.5-flash-lite",
+        ],
+      },
+
+      // Declare all models referenced anywhere
+      models: {
+        "openrouter/anthropic/claude-sonnet-4-5": {},
+        "openrouter/deepseek/deepseek-r1": {},
+        "openrouter/google/gemini-2.5-flash-lite": {},
+        "openrouter/openrouter/auto": {},
+      },
+
+      // Heartbeat: DeepSeek R1 (cheap executor, every 10 min)
+      heartbeat: {
+        every: "10m",
+        model: "openrouter/deepseek/deepseek-r1",
+        target: "telegram",
+        to: "<G_TELEGRAM_CHAT_ID>",
+        activeHours: {
+          start: "00:00",
+          end: "24:00",
+        },
+        prompt: "Read HEARTBEAT.md and follow it strictly. Read state/latest.md for orientation. If nothing needs attention, reply HEARTBEAT_OK.",
+      },
+
+      userTimezone: "Asia/Singapore",
+
+      compaction: {
+        mode: "default",
+        memoryFlush: {
+          enabled: true,
+          softThresholdTokens: 40000,
+          prompt: "Distill this session to memory. Focus on trades executed, signals observed, decisions made, and lessons learned. If nothing worth storing: NO_FLUSH",
+        },
+      },
+    },
+  },
+
+  // ── TELEGRAM ──────────────────────────────────────────────────────
+  channels: {
+    telegram: {
+      botToken: "${TELEGRAM_BOT_TOKEN}",
+      allowFrom: ["<G_TELEGRAM_USER_ID>"],
+    },
+  },
+
+  // ── SKILLS ────────────────────────────────────────────────────────
+  skills: {
+    entries: {
+      "smart-money-oracle": {
+        enabled: true,
+        env: { NANSEN_API_KEY: "${NANSEN_API_KEY}" },
+      },
+      "rug-warden": {
+        enabled: true,
+        env: {
+          HELIUS_API_KEY: "${HELIUS_API_KEY}",
+          BIRDEYE_API_KEY: "${BIRDEYE_API_KEY}",
+        },
+      },
+      "narrative-hunter": {
+        enabled: true,
+        env: {
+          X_BEARER_TOKEN: "${X_BEARER_TOKEN}",
+          BIRDEYE_API_KEY: "${BIRDEYE_API_KEY}",
+        },
+      },
+      "blind-executioner": {
+        enabled: true,
+        env: { HELIUS_API_KEY: "${HELIUS_API_KEY}" },
+      },
+      "edge-bank": { enabled: true },
+    },
+    allowBundled: [],
+  },
+
+  // ── LOGGING ───────────────────────────────────────────────────────
+  logging: {
+    redactSensitive: "tools",
+  },
+
+  // ── CRON ──────────────────────────────────────────────────────────
+  cron: { enabled: true },
+}

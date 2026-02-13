@@ -1,0 +1,57 @@
+# AutistBoar — Data Firehose Configuration
+# API endpoints, rate limits, and RPC fallback chain.
+
+# Solana RPC (fallback chain — rotate on 429/timeout)
+rpc:
+  primary:
+    provider: helius
+    url: "https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}"
+    timeout_seconds: 10
+  fallback_1:
+    provider: quicknode_free
+    url: "https://api.mainnet-beta.solana.com"
+    timeout_seconds: 15
+  fallback_2:
+    provider: public
+    url: "https://api.mainnet-beta.solana.com"
+    timeout_seconds: 20
+  backoff:
+    initial_seconds: 1
+    max_seconds: 60
+    multiplier: 2
+
+# Helius Enhanced APIs
+helius:
+  base_url: "https://api.helius.xyz/v0"
+  rate_limit_per_second: 10
+  cache_ttl_seconds: 60
+
+# Birdeye
+birdeye:
+  base_url: "https://public-api.birdeye.so"
+  rate_limit_per_second: 5
+  cache_ttl_seconds: 30
+
+# Nansen
+nansen:
+  base_url: "https://api.nansen.ai/api/v1"
+  rate_limit_per_second: 2
+  cache_ttl_seconds: 120
+
+# X API
+x_api:
+  base_url: "https://api.twitter.com/2"
+  rate_limit_per_15min: 300
+  cache_ttl_seconds: 60
+
+# Jupiter (swap execution)
+jupiter:
+  quote_url: "https://quote-api.jup.ag/v6/quote"
+  swap_url: "https://quote-api.jup.ag/v6/swap"
+  rate_limit_per_second: 10
+
+# Jito (MEV protection)
+jito:
+  bundle_url: "https://mainnet.block-engine.jito.wtf/api/v1/bundles"
+  tip_lamports_min: 1000       # Minimum tip (dynamic adjustment overrides)
+  tip_lamports_max: 100000     # Maximum tip cap
