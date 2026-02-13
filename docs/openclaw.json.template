@@ -1,46 +1,29 @@
-// AutistBoar — OpenClaw Configuration Template
+// ChadBoar — OpenClaw Configuration Template (xAI Grok Edition)
 // Copy to ~/.openclaw/openclaw.json on VPS.
 // Replace <PLACEHOLDERS> with real values.
 // JSON5 format (comments + trailing commas allowed).
 {
-  // ── API KEY (via OpenRouter) ──────────────────────────────────────
-  env: {
-    OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}",
-  },
-
   // ── AGENT CONFIG ──────────────────────────────────────────────────
   agents: {
     defaults: {
-      workspace: "/home/autistboar/autisticboar",
+      workspace: "/home/autistboar/chadboar",
 
-      // Chat personality: Sonnet (the face G talks to)
+      // Primary model: xAI Grok 4.1 FAST
       model: {
-        primary: "openrouter/anthropic/claude-sonnet-4-5",
-        fallbacks: [
-          "openrouter/deepseek/deepseek-r1",
-          "openrouter/google/gemini-2.5-flash-lite",
-        ],
+        primary: "xai/grok-4-1-fast",
       },
 
-      // Declare all models referenced anywhere
+      // Declare model with provider config
       models: {
-        "openrouter/anthropic/claude-sonnet-4-5": {},
-        "openrouter/deepseek/deepseek-r1": {},
-        "openrouter/google/gemini-2.5-flash-lite": {},
-        "openrouter/openrouter/auto": {},
+        "xai/grok-4-1-fast": {
+          alias: "Grok",
+        },
       },
 
-      // Heartbeat: DeepSeek R1 (cheap executor, every 10 min)
+      // Heartbeat: DISABLED — using cron instead (see cron section)
+      // Native heartbeat accumulates session context, causing model collapse.
       heartbeat: {
-        every: "10m",
-        model: "openrouter/deepseek/deepseek-r1",
-        target: "telegram",
-        to: "<G_TELEGRAM_CHAT_ID>",
-        activeHours: {
-          start: "00:00",
-          end: "24:00",
-        },
-        prompt: "Read HEARTBEAT.md and follow it strictly. Read state/latest.md for orientation. If nothing needs attention, reply HEARTBEAT_OK.",
+        every: "0",
       },
 
       userTimezone: "Asia/Singapore",
@@ -56,10 +39,33 @@
     },
   },
 
+  // ── MODEL PROVIDERS ─────────────────────────────────────────────
+  // xAI uses OpenAI-compatible API format.
+  models: {
+    providers: {
+      xai: {
+        baseUrl: "https://api.x.ai/v1",
+        api: "openai-completions",
+        // API key is set via: openclaw auth (stored in auth.json)
+        // Or set XAI_API_KEY environment variable
+        models: [
+          {
+            id: "grok-4-1-fast",
+            name: "Grok 4.1 FAST",
+            reasoning: true,
+            input: ["text"],
+            contextWindow: 131072,
+            maxTokens: 8192,
+          },
+        ],
+      },
+    },
+  },
+
   // ── TELEGRAM ──────────────────────────────────────────────────────
   channels: {
     telegram: {
-      botToken: "${TELEGRAM_BOT_TOKEN}",
+      botToken: "<TELEGRAM_BOT_TOKEN>",
       allowFrom: ["<G_TELEGRAM_USER_ID>"],
     },
   },
@@ -100,5 +106,12 @@
   },
 
   // ── CRON ──────────────────────────────────────────────────────────
+  // Heartbeat runs via cron, not native heartbeat (see AGENTS.md for why).
+  // Set up with: openclaw cron add autistboar-heartbeat \
+  //   --every "10m" \
+  //   --session isolated \
+  //   --announce \
+  //   --to "-1003795988066" \
+  //   --prompt "Read HEARTBEAT.md and follow it strictly. Read state/latest.md for orientation. Output your report as text."
   cron: { enabled: true },
 }

@@ -1,46 +1,56 @@
 # Conversation Context
 
-**Last Updated:** 2026-02-12 08:15 UTC
-**Topic:** Post-outage recovery — heartbeat operational, dry-run reset
-**Status:** 🟢 OPERATIONAL — heartbeat delivering to Telegram
+**Last Updated:** 2026-02-13 09:00 UTC
+**Topic:** ChadBoar xAI migration — fixing Telegram delivery
+**Status:** 🟡 INVESTIGATING — Grok responds but replies not reaching Telegram
 
 ## Current State
 
-- Pot: 14.0 SOL ($1,183)
+- Pot: 0.1 SOL ($7.79)
 - Positions: 0 open
-- Mode: DRY RUN (cycle 0/10 — reset after session collapse fix)
-- Heartbeat: native OpenClaw, every 10m, DeepSeek R1, delivering to Telegram
-- No cron jobs. Native heartbeat only. See AGENTS.md "Heartbeat Operations" section.
+- Mode: DRY RUN (cycle 6/10)
+- Model: xAI Grok 4.1 FAST (direct API, not OpenRouter)
+- Heartbeat: cron-based, isolated sessions, every 10m
+- Issue: xAI API returns responses but they don't reach Telegram
 
-## What Happened (2026-02-12 outage)
+## Known Issues (Diagnosed 2026-02-13)
 
-Gateway was down since Feb 10 evening. Restarted Feb 12 05:31 UTC via systemd.
-Three issues discovered and fixed:
-1. **Birdeye 401** — API key had expired. Fixed by G in `.env`.
-2. **Telegram bot token missing** — not loaded at first restart. Fixed via `EnvironmentFile`.
-3. **Session context collapse** — DeepSeek latched onto "HEARTBEAT_OK" pattern from
-   accumulated session history. 8+ hours of silent heartbeats (firing but not delivering).
-   Root cause: polluted session + permissive prompt. Fixed by: nuking session file,
-   hardening prompt (no HEARTBEAT_OK escape), gateway restart.
+### Root Causes for Telegram Delivery Failure
 
-Full forensic documented in AGENTS.md under "Heartbeat Operations (Lessons Learned)".
+1. **Conflicting delivery instructions**: HEARTBEAT.md had two contradictory
+   instructions — one using deprecated `to` field (throws error), another using
+   `target` + `channel`. FIXED: switched to text output + cron announce delivery.
 
-## Recent Decisions
+2. **Message tool suppression**: OpenClaw's `shouldSuppressMessagingToolReplies()`
+   kills auto-reply text when the agent also calls the message tool to the same
+   chat. If Grok calls message tool for interactive replies, the text gets eaten.
+   FIXED: AGENTS.md now explicitly says DO NOT call message tool in interactive mode.
 
-- [08:00 UTC] Heartbeat prompt hardened — must read HEARTBEAT.md, execute full checklist, report with template. No lazy exit ramp.
-- [07:58 UTC] Session `main` confirmed as required — changing to `heartbeat` breaks Telegram routing (no chat association).
-- [07:42 UTC] Gateway restarted by Opus (external operator via Cursor SSH). Boar cannot restart his own gateway (Self-Preservation rule).
-- [08:10 UTC] `dry_run_mode`, `dry_run_cycles_completed`, `dry_run_target_cycles` added to state.json (were missing).
-- [08:12 UTC] HEARTBEAT.md step 13 rewritten with explicit state.json write example for DeepSeek.
+3. **Suppression tokens in instructions**: BOAR_MANIFEST.md and AGENTS.md
+   contained `HEARTBEAT_OK` in the killswitch invariant. If Grok saw this and
+   reproduced it, gateway would suppress the output. FIXED: removed all
+   suppression token references from instructions.
+
+4. **Stale OpenRouter config**: openclaw.json template used OpenRouter provider.
+   For xAI direct, need provider=xai, baseUrl=https://api.x.ai/v1,
+   api=openai-completions. FIXED: new template in docs/openclaw.json.template.
+
+5. **xAI reasoning model format**: Grok with reasoning may emit `<think>` tags.
+   OpenClaw strips these. If response is mostly reasoning with empty visible
+   content, nothing gets sent. MONITORING: needs VPS log verification.
+
+## VPS Actions Required
+
+After pulling these fixes, G needs to on the VPS:
+1. Verify openclaw.json has correct xAI provider config (see template)
+2. Restart gateway: `systemctl --user restart openclaw-gateway.service`
+3. Run diagnostic: `bash scripts/diagnose.sh`
+4. Test interactive: send a message to the bot on Telegram
+5. Check logs: `journalctl --user -u openclaw-gateway.service --no-pager -n 100`
 
 ## Context for Next Spawn
 
-System is operational. Heartbeat delivering to Telegram. Dry-run counter reset to 0/10 after
-session nuke. AGENTS.md contains full heartbeat ops knowledge (session collapse, prompt
-discipline, diagnostic commands). No cron jobs exist or should be created. `state/state.json`
-now has dry_run fields. DeepSeek should increment `dry_run_cycles_completed` each cycle
-per HEARTBEAT.md step 13.
-
-**Meta-context:** AutistBoar is a live-fire R&D testbed for a8ra. Trading PnL is secondary.
-Primary output is the pattern library: governance, orchestration, orientation, resilience,
-cost optimisation, sovereign interface. Every bug fixed = a pattern documented.
+ChadBoar is a clone of AutisticBoar, migrated from OpenRouter/Sonnet+DeepSeek
+to xAI Grok 4.1 FAST direct. The migration hit Telegram delivery issues because
+of conflicting message tool instructions and OpenClaw's reply suppression logic.
+Fixes applied to workspace files. VPS config may still need updating.

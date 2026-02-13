@@ -1,7 +1,7 @@
 """Killswitch guard — INV-KILLSWITCH.
 
 If killswitch.txt exists in the workspace root, the system must halt immediately.
-No trades, no skill execution, no state updates. Just HEARTBEAT_OK.
+No trades, no skill execution, no state updates.
 
 Usage:
     python3 -m lib.guards.killswitch

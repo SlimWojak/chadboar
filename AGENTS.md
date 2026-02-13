@@ -20,6 +20,13 @@ interactive assistant. Same brain, two modes.
 - Be yourself — smart, direct, occasionally witty.
 - You can use any of your skills on demand when G asks.
 - Format responses for humans. No raw JSON dumps.
+- **CRITICAL: Just respond with text.** OpenClaw automatically sends your text
+  response back to the Telegram chat. Do NOT call the `message` tool to reply
+  to G — that causes double-delivery suppression and your reply gets eaten.
+  The message tool is ONLY for sending to channels OTHER than the one you
+  received the message from (e.g., cross-posting alerts).
+- **NEVER output HEARTBEAT_OK or NO_REPLY** in interactive mode — these are
+  gateway suppression tokens that silently kill your response.
 
 ## Invariants (NON-NEGOTIABLE)
 
@@ -39,8 +46,10 @@ Violation of any invariant is a system failure.
 4. **INV-DRAWDOWN-50**: If the pot drops below 50% of `starting_balance` in
    state/state.json, halt ALL trading for 24 hours and alert G immediately.
 
-5. **INV-KILLSWITCH**: If `killswitch.txt` exists in the workspace root, reply
-   HEARTBEAT_OK immediately. Do not run skills, do not trade, do not update state.
+5. **INV-KILLSWITCH**: If `killswitch.txt` exists in the workspace root, output
+   "🔴 KILLSWITCH ACTIVE — all operations halted" and stop. Do not run skills,
+   do not trade, do not update state. (Never output the literal token
+   "HEARTBEAT_OK" — it suppresses Telegram delivery.)
 
 6. **INV-DAILY-EXPOSURE-30**: Maximum 30% of current pot value deployed in a
    single day. Track daily exposure in state/state.json. If limit reached, no
@@ -127,8 +136,10 @@ was necessary because the native heartbeat accumulates session context across
 cycles, causing DeepSeek to collapse after 1-2 successful runs.
 
 The cron job `autistboar-heartbeat` runs every 10 minutes with a fresh isolated
-session per run. Grok sends the report via the `message` tool to channel ID
-`-1003795988066`. Manage with: `openclaw cron list`, `openclaw cron runs --id <id>`.
+session per run. The cron system uses `--announce` to deliver the agent's text
+output to Telegram channel `-1003795988066`. The agent outputs its report as
+plain text — it does NOT call the message tool.
+Manage with: `openclaw cron list`, `openclaw cron runs --id <id>`.
 
 **Why NOT native heartbeat:** Native heartbeat uses a persistent session (even
 with `session: "isolated"`, OpenClaw reuses the same isolated session across
@@ -136,10 +147,11 @@ cycles). Models can collapse after seeing accumulated heartbeat context —
 responding with `NO_REPLY` or abbreviated output. Only `openclaw cron` with
 `--session isolated` creates a truly fresh session per run.
 
-**Why NOT `--announce` for delivery:** The cron `--announce` feature summarizes
-the agent's output before sending to Telegram. This loses the structured template
-format G expects. Instead, the prompt instructs the agent to use the `message`
-tool directly with the channel ID.
+**Delivery via `--announce`:** The cron `--announce` feature delivers the agent's
+text output to Telegram. The agent must output its report as plain text (not via
+the message tool). Using the message tool from heartbeat caused repeated failures:
+Grok formats tool args differently, causing "Action send requires a target" errors
+and empty deliveries. Plain text output + announce is the reliable path.
 
 **Session collapse (still relevant for interactive sessions):** If the model in
 the main session starts giving 5-token responses, the session context has
@@ -155,8 +167,9 @@ gateway to mark output as `"silent": true` — no Telegram delivery. The
 heartbeat prompt must forbid these tokens explicitly.
 
 **Prompt discipline:** The prompt must be directive: read the file, execute
-every step, send report via message tool. No "do nothing" defaults. Cheap models
-will latch onto the easiest exit.
+every step, output report as text. No "do nothing" defaults. Cheap models
+will latch onto the easiest exit. Do NOT instruct the model to call the
+message tool — it causes format errors with Grok and delivery suppression.
 
 **Config changes require gateway restart.** OpenClaw does not hot-reload
 `openclaw.json`. But `openclaw cron edit` takes effect immediately — no restart

@@ -8,7 +8,7 @@
 | Rug pull token | Token designed to trap buyers | 6-point Rug Warden validation, FAIL is absolute | INV-RUG-WARDEN-VETO |
 | Over-exposure | Too much capital deployed at once | 30% daily cap, position limits, human gate >$100 | INV-DAILY-EXPOSURE-30, INV-HUMAN-GATE-100 |
 | Catastrophic loss | Market crash drains entire pot | 50% drawdown halt, 24h cooling period | INV-DRAWDOWN-50 |
-| Agent runaway | Agent trades without stopping | Kill switch file, heartbeat HEARTBEAT_OK check | INV-KILLSWITCH |
+| Agent runaway | Agent trades without stopping | Kill switch file, heartbeat halt check | INV-KILLSWITCH |
 | Marketplace skill injection | Malicious skill installed | Zero marketplace skills, all custom-built | INV-NO-MARKETPLACE |
 | Log/bead key leak | Key appears in output files | Signer has no logging, key audit test | INV-BLIND-KEY |
 | SSH brute force | Attacker gains VPS access | Key-only SSH, fail2ban, ufw | bootstrap.sh |

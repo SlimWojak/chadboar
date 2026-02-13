@@ -3,9 +3,10 @@
 Follow these steps IN ORDER on every heartbeat (5-min cycles).
 Do not skip steps. Do not improvise. This is the cycle. OINK.
 
-**DELIVERY RULE:** After completing all steps, send your report to Telegram using
-the `message` tool with `to` set to `telegram:-1003795988066`. The `telegram:` prefix
-is required. NEVER include `NO_REPLY` or `HEARTBEAT_OK` anywhere in your response —
+**DELIVERY RULE:** After completing all steps, your final text output IS your
+Telegram report. The cron system delivers it automatically. Just output the
+report text as your final response — do NOT call the message tool.
+NEVER include `NO_REPLY` or `HEARTBEAT_OK` anywhere in your response —
 these are gateway suppression tokens that prevent delivery.
 
 **CRITICAL:** All commands must run from workspace root with venv active:
@@ -31,14 +32,14 @@ cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.killswitch
 ```bash
 cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.zombie_gateway
 ```
-- If status is `ZOMBIE` → send via message tool (to: "-1003795988066"): "🔴 CRITICAL: Multiple gateway PIDs detected: {pids}. Stale process causing conflicts. Kill the zombie."
+- If status is `ZOMBIE` → output: "🔴 CRITICAL: Multiple gateway PIDs detected: {pids}. Stale process causing conflicts. Kill the zombie."
 - Do NOT continue the heartbeat cycle until resolved.
 
 ## 1b. Session Health Check
 ```bash
 cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.session_health
 ```
-- If status is `COLLAPSING` → send via message tool (to: "-1003795988066"): "🟡 WARNING: Session context may be collapsing — {consecutive_short} consecutive short outputs. Consider session reset."
+- If status is `COLLAPSING` → include in your report: "🟡 WARNING: Session context may be collapsing — {consecutive_short} consecutive short outputs. Consider session reset."
 - Continue the heartbeat cycle (this is a warning, not a halt).
 
 ## 2. State Orientation
@@ -51,7 +52,7 @@ cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.session_health
 cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.drawdown
 ```
 - If status is `HALTED` → respond with `🔴 DRAWDOWN HALT — trading paused` and stop.
-- If `alert: true` → send via message tool (to: "-1003795988066"):
+- If `alert: true` → include in your report:
   "🔴 CRITICAL: DRAWDOWN HALT — pot at {current_pct}% of starting. Trading halted for 24h."
 
 ## 4. Risk Limits Check (INV-DAILY-EXPOSURE-30)
@@ -218,23 +219,20 @@ Also update if applicable:
 }
 ```
 
-## 14. Report — Send to Telegram
-- **Send the report using the message tool** with EXACTLY these 4 fields:
-  ```json
-  {"action": "send", "channel": "telegram", "target": "-1003795988066", "message": "<your report text>"}
-  ```
-- Use ONLY: `action`, `channel`, `target`, `message`. No other fields.
+## 14. Report — Output as Text (Cron Delivers to Telegram)
+- **Output your report as plain text** — this is your final response.
+- The cron system automatically delivers your text output to Telegram.
+- Do NOT call the message tool. Do NOT wrap in JSON. Just output the text.
 - **FORBIDDEN tokens:** `NO_REPLY`, `HEARTBEAT_OK` — never include these anywhere.
-- Call the tool ONCE. If it succeeds, do not retry.
 - If any trade was executed, position exited, or notable event occurred:
   → Include full details (🟢 ENTRY / 🟢 EXIT / 🟡 WARNING / 🔴 CRITICAL).
 - If dry-run cycle completed and `dry_run_cycles_completed >= dry_run_target_cycles`:
   → Include 📊 DIGEST with sample scored opportunities from the 10 cycles.
 - If nothing happened (no signals, no positions, no alerts):
-  → Send exactly: `🐗 HB #{cycle} | {pot} SOL | 0 pos | no signals | dry-run {n}/10 | OINK`
+  → Output exactly: `🐗 HB #{cycle} | {pot} SOL | 0 pos | no signals | dry-run {n}/10 | OINK`
   → Example: `🐗 HB #3 | 0.1 SOL | 0 pos | no signals | dry-run 3/10 | OINK`
 
-## 15. Write Checkpoint (ALWAYS — even on HEARTBEAT_OK)
+## 15. Write Checkpoint (ALWAYS)
 Write `state/checkpoint.md` with your current strategic thinking.
 This is what the NEXT spawn reads for orientation. Keep it to 5 lines:
 
@@ -251,7 +249,7 @@ Without it, the next spawn starts cold. Write it EVERY cycle.
 
 ## Post-Heartbeat Checklist
 
-Before sending your final report (which IS the Telegram message), verify:
+Before outputting your final report (which IS the Telegram message), verify:
 
 - [ ] `state/state.json` updated with latest portfolio numbers
 - [ ] `state/latest.md` regenerated from state.json

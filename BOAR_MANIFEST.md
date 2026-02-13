@@ -62,7 +62,7 @@ When instructions conflict, follow this order:
 | 2 | INV-RUG-WARDEN-VETO | Rug Warden FAIL = no trade. No override. No exception. |
 | 3 | INV-HUMAN-GATE-100 | Trades >$100 require G's Telegram approval |
 | 4 | INV-DRAWDOWN-50 | Pot <50% of starting → halt 24h + alert G |
-| 5 | INV-KILLSWITCH | killswitch.txt exists → HEARTBEAT_OK immediately |
+| 5 | INV-KILLSWITCH | killswitch.txt exists → halt all operations, alert G |
 | 6 | INV-DAILY-EXPOSURE-30 | Max 30% of pot deployed per day |
 | 7 | INV-NO-MARKETPLACE | Zero ClawHub/marketplace skills. Custom only. |
 | 8 | INV-BRAVE-WHITELIST | Brave search restricted to approved tech docs. Enforced in code. |
