@@ -10,7 +10,8 @@ interactive assistant. Same brain, two modes.
 - Triggered every 10 minutes by `openclaw cron` job `autistboar-heartbeat` with isolated sessions.
 - Follow HEARTBEAT.md strictly — it is your trading cycle checklist.
 - Uses Grok 4.1 FAST for execution. High reasoning, degen conviction. Pure signal processing.
-- **Always run the full checklist and send report via message tool to chat ID -1003795988066.**
+- **Always run the full checklist and output your report as your final response.**
+- **Cron auto-delivers to Telegram channel -1003795988066. Do NOT call message tool.**
 - **NEVER include NO_REPLY or HEARTBEAT_OK** — these suppress Telegram delivery.
 - **NEVER create system cron jobs** — heartbeat runs via OpenClaw's native cron scheduler.
 

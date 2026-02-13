@@ -3,12 +3,11 @@
 Follow these steps IN ORDER on every heartbeat (5-min cycles).
 Do not skip steps. Do not improvise. This is the cycle. OINK.
 
-**DELIVERY RULE:** After completing all steps, send your report to Telegram using
-the `message` tool with `to: "-1003795988066"` (G's chat ID). This is required because
-heartbeat runs in an isolated session without automatic Telegram routing.
+**DELIVERY RULE:** After completing all steps, output your report as your FINAL
+response text. The cron system will automatically deliver it to Telegram channel
+`-1003795988066`. Do NOT call the message tool yourself — just output the report.
 NEVER include `NO_REPLY` or `HEARTBEAT_OK` anywhere in your response — these are
-gateway suppression tokens. Every heartbeat MUST end by sending the template from
-step 14 via the message tool.
+gateway suppression tokens that prevent delivery.
 
 **CRITICAL:** All commands must run from workspace root with venv active:
 ```bash
@@ -220,14 +219,10 @@ Also update if applicable:
 }
 ```
 
-## 14. Report — Send to Telegram
-- **Send the report ONCE using the message tool** with `to: "-1003795988066"`.
+## 14. Report — Final Output (Auto-delivered to Telegram)
+- **Output your report as your final response.** The cron system delivers it automatically.
+- **Do NOT call the message tool.** Just output the text.
 - **FORBIDDEN tokens:** `NO_REPLY`, `HEARTBEAT_OK` — never include these anywhere.
-- Compose the report text, then send it ONCE:
-  ```
-  message(action: "send", to: "-1003795988066", message: "<your report text>")
-  ```
-- If the message tool returns `ok: true`, delivery succeeded. **Do NOT retry or send again.**
 - If any trade was executed, position exited, or notable event occurred:
   → Include full details (🟢 ENTRY / 🟢 EXIT / 🟡 WARNING / 🔴 CRITICAL).
 - If dry-run cycle completed and `dry_run_cycles_completed >= dry_run_target_cycles`:
