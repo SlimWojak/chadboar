@@ -13,6 +13,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from lib.clients.nansen import NansenClient
 from lib.clients.birdeye import BirdeyeClient
 from lib.clients.x_api import XClient
