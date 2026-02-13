@@ -219,13 +219,13 @@ Also update if applicable:
 ```
 
 ## 14. Report — Send to Telegram
-- **Send the report using the message tool** with the `to` field set to `telegram:-1003795988066`.
+- **Send the report using the message tool** with EXACTLY these 4 fields:
+  ```json
+  {"action": "send", "channel": "telegram", "target": "-1003795988066", "message": "<your report text>"}
+  ```
+- Use ONLY: `action`, `channel`, `target`, `message`. No other fields.
 - **FORBIDDEN tokens:** `NO_REPLY`, `HEARTBEAT_OK` — never include these anywhere.
-- Call the message tool exactly like this:
-  ```
-  message({"to": "telegram:-1003795988066", "text": "<your report text>"})
-  ```
-- The `to` field MUST be exactly `telegram:-1003795988066` (with the `telegram:` prefix).
+- Call the tool ONCE. If it succeeds, do not retry.
 - If any trade was executed, position exited, or notable event occurred:
   → Include full details (🟢 ENTRY / 🟢 EXIT / 🟡 WARNING / 🔴 CRITICAL).
 - If dry-run cycle completed and `dry_run_cycles_completed >= dry_run_target_cycles`:
