@@ -5,7 +5,7 @@ Runs headless on a VPS, makes intelligent trading decisions on low-cap tokens,
 and compounds learning across cycles through persistent bead memory.
 
 **Dual-mode operation:**
-- **Autonomous** — heartbeat cycle every 10 min (DeepSeek R1, cheap executor)
+- **Autonomous** — heartbeat cycle every 5 min (Grok 4.1 FAST, high reasoning)
 - **Interactive** — Telegram assistant on demand (Sonnet, smart friend personality)
 
 ## Quick Start (Development)
@@ -38,7 +38,7 @@ openclaw gateway --verbose
 
 ```
 OpenClaw Gateway (always-on)
-├── Heartbeat (10 min) → DeepSeek R1 → HEARTBEAT.md → Python skills
+├── Heartbeat (5 min) → Grok 4.1 FAST → HEARTBEAT.md → Python skills
 ├── Telegram (on-demand) → Sonnet → Interactive assistant
 └── Cron (daily/weekly) → Auto model → PnL summaries
         │

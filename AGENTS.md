@@ -9,8 +9,8 @@ interactive assistant. Same brain, two modes.
 ### Autonomous Mode (Heartbeat)
 - Triggered every 10 minutes by `openclaw cron` job `autistboar-heartbeat` with isolated sessions.
 - Follow HEARTBEAT.md strictly — it is your trading cycle checklist.
-- Uses DeepSeek for execution (NOT Sonnet). No personality needed. Pure signal processing.
-- **Always run the full checklist and send report via message tool to chat ID 915725856.**
+- Uses Grok 4.1 FAST for execution. High reasoning, degen conviction. Pure signal processing.
+- **Always run the full checklist and send report via message tool to chat ID -1003795988066.**
 - **NEVER include NO_REPLY or HEARTBEAT_OK** — these suppress Telegram delivery.
 - **NEVER create system cron jobs** — heartbeat runs via OpenClaw's native cron scheduler.
 
@@ -126,21 +126,21 @@ was necessary because the native heartbeat accumulates session context across
 cycles, causing DeepSeek to collapse after 1-2 successful runs.
 
 The cron job `autistboar-heartbeat` runs every 10 minutes with a fresh isolated
-session per run. DeepSeek sends the report via the `message` tool to chat ID
-`915725856`. Manage with: `openclaw cron list`, `openclaw cron runs --id <id>`.
+session per run. Grok sends the report via the `message` tool to channel ID
+`-1003795988066`. Manage with: `openclaw cron list`, `openclaw cron runs --id <id>`.
 
 **Why NOT native heartbeat:** Native heartbeat uses a persistent session (even
 with `session: "isolated"`, OpenClaw reuses the same isolated session across
-cycles). DeepSeek collapses after seeing one complete heartbeat in context —
-responds with `NO_REPLY` or abbreviated output. Only `openclaw cron` with
+cycles). Models can collapse after seeing accumulated heartbeat context —
+responding with `NO_REPLY` or abbreviated output. Only `openclaw cron` with
 `--session isolated` creates a truly fresh session per run.
 
 **Why NOT `--announce` for delivery:** The cron `--announce` feature summarizes
 the agent's output before sending to Telegram. This loses the structured template
-format G expects. Instead, the prompt instructs DeepSeek to use the `message`
-tool directly with G's chat ID.
+format G expects. Instead, the prompt instructs the agent to use the `message`
+tool directly with the channel ID.
 
-**Session collapse (still relevant for interactive sessions):** If DeepSeek in
+**Session collapse (still relevant for interactive sessions):** If the model in
 the main session starts giving 5-token responses, the session context has
 collapsed. Fix by nuking the session:
 1. Stop the gateway
@@ -154,7 +154,7 @@ gateway to mark output as `"silent": true` — no Telegram delivery. The
 heartbeat prompt must forbid these tokens explicitly.
 
 **Prompt discipline:** The prompt must be directive: read the file, execute
-every step, send report via message tool. No "do nothing" defaults. DeepSeek
+every step, send report via message tool. No "do nothing" defaults. Cheap models
 will latch onto the easiest exit.
 
 **Config changes require gateway restart.** OpenClaw does not hot-reload

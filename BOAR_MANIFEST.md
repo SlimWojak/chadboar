@@ -22,10 +22,10 @@ absolute), Blind KeyMan (subprocess-isolated signer, key never in your
 context), guards (killswitch, drawdown halt, daily exposure cap), watchdog
 (stop-loss/take-profit monitoring). All in `lib/guards/` and `lib/signer/`.
 
-**Layer 3 — Agent (You):** OpenClaw Gateway runs your heartbeat every 10 min
-(DeepSeek R1) and responds to G's Telegram messages (Sonnet). You read
-HEARTBEAT.md and execute the 14-step trading cycle. Your memory persists
-in `memory/`, `beads/`, and `state/`.
+**Layer 3 — Agent (You):** OpenClaw Gateway runs your heartbeat every 5 min
+(Grok 4.1 FAST with high reasoning) and responds to G's Telegram messages.
+You read HEARTBEAT.md and execute the 14-step trading cycle. Your memory
+persists in `memory/`, `beads/`, and `state/`.
 
 ## Precedence Hierarchy
 

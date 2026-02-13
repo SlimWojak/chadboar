@@ -4,7 +4,7 @@ Follow these steps IN ORDER on every heartbeat (5-min cycles).
 Do not skip steps. Do not improvise. This is the cycle. OINK.
 
 **DELIVERY RULE:** After completing all steps, send your report to Telegram using
-the `message` tool with `to: "915725856"` (G's chat ID). This is required because
+the `message` tool with `to: "-1003795988066"` (G's chat ID). This is required because
 heartbeat runs in an isolated session without automatic Telegram routing.
 NEVER include `NO_REPLY` or `HEARTBEAT_OK` anywhere in your response — these are
 gateway suppression tokens. Every heartbeat MUST end by sending the template from
@@ -33,14 +33,14 @@ cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.killswitch
 ```bash
 cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.zombie_gateway
 ```
-- If status is `ZOMBIE` → send via message tool (to: "915725856"): "🔴 CRITICAL: Multiple gateway PIDs detected: {pids}. Stale process causing conflicts. Kill the zombie."
+- If status is `ZOMBIE` → send via message tool (to: "-1003795988066"): "🔴 CRITICAL: Multiple gateway PIDs detected: {pids}. Stale process causing conflicts. Kill the zombie."
 - Do NOT continue the heartbeat cycle until resolved.
 
 ## 1b. Session Health Check
 ```bash
 cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.session_health
 ```
-- If status is `COLLAPSING` → send via message tool (to: "915725856"): "🟡 WARNING: Session context may be collapsing — {consecutive_short} consecutive short outputs. Consider session reset."
+- If status is `COLLAPSING` → send via message tool (to: "-1003795988066"): "🟡 WARNING: Session context may be collapsing — {consecutive_short} consecutive short outputs. Consider session reset."
 - Continue the heartbeat cycle (this is a warning, not a halt).
 
 ## 2. State Orientation
@@ -53,7 +53,7 @@ cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.session_health
 cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.drawdown
 ```
 - If status is `HALTED` → respond with `🔴 DRAWDOWN HALT — trading paused` and stop.
-- If `alert: true` → send via message tool (to: "915725856"):
+- If `alert: true` → send via message tool (to: "-1003795988066"):
   "🔴 CRITICAL: DRAWDOWN HALT — pot at {current_pct}% of starting. Trading halted for 24h."
 
 ## 4. Risk Limits Check (INV-DAILY-EXPOSURE-30)
@@ -221,11 +221,11 @@ Also update if applicable:
 ```
 
 ## 14. Report — Send to Telegram
-- **Send the report ONCE using the message tool** with `to: "915725856"`.
+- **Send the report ONCE using the message tool** with `to: "-1003795988066"`.
 - **FORBIDDEN tokens:** `NO_REPLY`, `HEARTBEAT_OK` — never include these anywhere.
 - Compose the report text, then send it ONCE:
   ```
-  message(action: "send", to: "915725856", message: "<your report text>")
+  message(action: "send", to: "-1003795988066", message: "<your report text>")
   ```
 - If the message tool returns `ok: true`, delivery succeeded. **Do NOT retry or send again.**
 - If any trade was executed, position exited, or notable event occurred:

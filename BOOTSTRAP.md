@@ -38,7 +38,7 @@ This file defines how ChadBoar initializes on fresh deployment or after a hard r
 **OpenClaw Native Heartbeat System:**
 - Configured in `~/.openclaw/openclaw.json` under `agents.defaults.heartbeat`
 - Triggers every 10 minutes automatically
-- Routes to DeepSeek R1 model (NOT Sonnet/Claude)
+- Routes to Grok 4.1 FAST model (high reasoning)
 - Injects prompt: "Read HEARTBEAT.md if it exists..."
 - Delivers output to Telegram when configured
 
@@ -51,18 +51,18 @@ This file defines how ChadBoar initializes on fresh deployment or after a hard r
 
 **If you think heartbeats aren't working:**
 1. Check `openclaw.json` config: `cat ~/.openclaw/openclaw.json | jq '.agents.defaults.heartbeat'`
-2. Verify model is `openrouter/deepseek/deepseek-chat`
+2. Verify model is `openrouter/x-ai/grok-4-fast`
 3. Check `every: "10m"` and `session: "main"`
 4. **Do NOT create a cron job** — this causes model selection conflicts
 
 **Heartbeat Flow:**
 ```
-Native heartbeat (10min) → DeepSeek reads HEARTBEAT.md → Executes cycle → Reports to Telegram
+Cron heartbeat (5min) → Grok reads HEARTBEAT.md → Executes cycle → Reports to Telegram
 ```
 
 **What happens if you create a cron job by mistake:**
 - Both native heartbeat AND cron fire every 10 minutes
-- Cron hits Sonnet (chat model) instead of DeepSeek
+- Cron hits wrong model instead of Grok
 - Sonnet gets confused (no HEARTBEAT.md context loaded)
 - Costs 10x more per cycle
 - Creates "reminder content not found" errors

@@ -1,11 +1,11 @@
 """Session health guard — detect context collapse.
 
-Cheap models (DeepSeek) latch onto shortest patterns in accumulating sessions.
+Models can latch onto shortest patterns in accumulating sessions.
 When heartbeat outputs shrink to ~5 tokens ("HEARTBEAT_OK"), the session has
 collapsed. This guard checks the last N heartbeat assistant outputs and warns
 if 3+ consecutive responses are under a token threshold.
 
-Proven failure mode: Feb 12 2026 — DeepSeek responded "HEARTBEAT_OK" (5 tokens)
+Proven failure mode: Feb 12 2026 — model responded "HEARTBEAT_OK" (5 tokens)
 for 8+ hours. Gateway marked them silent, no Telegram delivery.
 
 Usage:
@@ -130,7 +130,7 @@ def check_session_health() -> dict:
             "message": (
                 f"SESSION COLLAPSE WARNING: {consecutive_short} consecutive "
                 f"heartbeat outputs under {MIN_OUTPUT_TOKENS} tokens. "
-                f"DeepSeek may be pattern-locked. Consider session reset. "
+                f"Model may be pattern-locked. Consider session reset. "
                 f"Fix: delete session file, restart gateway."
             ),
             "consecutive_short": consecutive_short,
