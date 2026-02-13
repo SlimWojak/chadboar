@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Wrapper: avoids "cd && python" which Grok HTML-encodes as &amp;&amp;
+cd /home/autistboar/chadboar || exit 1
+exec .venv/bin/python3 "$@"

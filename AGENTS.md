@@ -177,6 +177,14 @@ needed for cron job changes. Boar must NEVER restart his own gateway. Only G or
 an external operator (Cursor/Opus via SSH) can restart. Command:
 `systemctl --user restart openclaw-gateway.service`
 
+**Telegram update offset corruption (fixed 2026-02-13):** OpenClaw persists the
+last-seen Telegram update ID to `~/.openclaw/telegram/update-offset-default.json`.
+If this file has a `lastUpdateId` higher than actual Telegram update IDs, ALL
+inbound messages are silently skipped with zero logging. If Telegram interactive
+replies stop working, check this file FIRST. Reset with:
+`echo '{"version":1,"lastUpdateId":null}' > ~/.openclaw/telegram/update-offset-default.json`
+Then restart the gateway. Full forensics: `docs/FORENSICS_2026-02-13_TELEGRAM_INTERACTIVE_FIX.md`
+
 **Diagnostic commands:**
 - `openclaw cron list` — cron job status, next/last run times
 - `openclaw cron runs --id <id>` — run history, session IDs, errors
@@ -184,6 +192,8 @@ an external operator (Cursor/Opus via SSH) can restart. Command:
 - `openclaw health` — Telegram connection, session list
 - `openclaw sessions --json` — session token usage, model, staleness
 - `journalctl --user -u openclaw-gateway.service --no-pager -n 100` — gateway logs
+- `cat ~/.openclaw/telegram/update-offset-default.json` — Telegram update offset (check if corrupted)
+- `OPENCLAW_LOG_LEVEL=debug openclaw gateway --port 18789 --verbose` — verbose mode (stop service first)
 
 ## Prompt Injection Defense
 

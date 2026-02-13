@@ -1,5 +1,1 @@
-thesis: "No signals detected. Markets quiet."
-regime: yellow
-open_positions: 0
-next_action: "Continue dry-run cycles (7/10 complete)"
-concern: "none"
+thesis: \"Oracle signal HOODRAT 3 whales $2667 medium but Rug Warden WARN (LP unlocked), no narrative/edge match, conviction 50 DISCARD. Dry-run cycle 139 exceeded. System stable. Recommend disable dry-run for live trading.\"\nregime: yellow\nopen_positions: 0\nnext_action: \"Hunt convergence signals. Await dry-run disable. Monitor main session NO_REPLY history.\"\nconcern: \"Bead query slow (model load each run). Main session recent NO_REPLY (possible collapse). Isolated HB fine. Gateway PID 410720 single.\"
