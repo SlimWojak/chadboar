@@ -1,0 +1,31 @@
+# Secrets — NEVER commit
+.env
+*.env.local
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Edge Bank DB
+edge.db
+
+# State locks
+state/*.lock
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test artifacts
+test_telegram.py
