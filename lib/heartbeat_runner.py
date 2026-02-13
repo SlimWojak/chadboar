@@ -22,6 +22,22 @@ from lib.utils.async_batch import batch_price_fetch
 from lib.utils.file_lock import safe_read_json, safe_write_json
 from lib.utils.red_flags import check_concentrated_volume
 from lib.skills.warden_check import check_token
+from lib.llm_utils import call_grok
+
+
+# Grok alpha override system prompt
+GROK_ALPHA_PROMPT = """You are ChadBoar's alpha brain. DENSE YAML only.
+Given signal data for a token, decide if this is alpha worth trading.
+Rug Warden already PASSED — safety is cleared. Your job: pattern match.
+
+Respond with EXACTLY this YAML format (no markdown fences):
+verdict: TRADE | NOPE
+reasoning: <one sentence — pattern match + conviction chain>
+confidence: <0.0-1.0>
+
+TRADE = upgrade to AUTO_EXECUTE. NOPE = stay on WATCHLIST.
+Only say TRADE if you see genuine convergence (whale + narrative + volume).
+Be ruthless. Most things are NOPE."""
 
 
 async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
@@ -265,23 +281,84 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             }
         }
         
+        # GROK ALPHA OVERRIDE (Step 9b)
+        # After scoring, if WATCHLIST + rug warden PASS, ask Grok for alpha call.
+        # Grok can upgrade WATCHLIST → AUTO_EXECUTE. Cannot override VETO.
+        grok_override = None
+        if score.recommendation == "WATCHLIST" and rug_status == "PASS":
+            try:
+                token_symbol = (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN")
+                grok_prompt = (
+                    f"Token: {token_symbol} ({mint[:12]}...)\n"
+                    f"Signals: whales={whales}, volume_spike={volume_spike}x, "
+                    f"kol={kol_detected}, age={age_minutes}min\n"
+                    f"Score: ordering={score.ordering_score}, permission={score.permission_score}\n"
+                    f"Primary sources: {score.primary_sources}\n"
+                    f"Red flags: {score.red_flags}\n"
+                    f"Reasoning: {score.reasoning}"
+                )
+                grok_result = await call_grok(
+                    prompt=grok_prompt,
+                    system_prompt=GROK_ALPHA_PROMPT,
+                    max_tokens=256,
+                    temperature=0.2,
+                )
+                if grok_result["status"] == "OK":
+                    grok_content = grok_result["content"].strip()
+                    grok_override = grok_content
+                    # Parse TRADE/NOPE from Grok response
+                    if "verdict: TRADE" in grok_content or "verdict:TRADE" in grok_content:
+                        # Grok says TRADE — upgrade recommendation
+                        score.recommendation = "AUTO_EXECUTE"
+                        score.reasoning += f" | GROK OVERRIDE: {grok_content}"
+                    else:
+                        score.reasoning += f" | GROK: NOPE — staying WATCHLIST"
+                else:
+                    result["errors"].append(f"Grok override failed: {grok_result.get('error', 'unknown')}")
+            except Exception as e:
+                result["errors"].append(f"Grok override error for {mint[:8]}: {e}")
+        
+        opportunity = {
+            "token_mint": mint,
+            "token_symbol": (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN"),
+            "ordering_score": score.ordering_score,
+            "permission_score": score.permission_score,
+            "breakdown": score.breakdown,
+            "red_flags": score.red_flags,
+            "primary_sources": score.primary_sources,
+            "recommendation": score.recommendation,
+            "position_size_sol": score.position_size_sol,
+            "reasoning": score.reasoning,
+            "grok_override": grok_override,
+            "signals": {
+                "whales": whales,
+                "volume_spike": volume_spike,
+                "kol": kol_detected,
+                "age_min": age_minutes,
+                "rug": rug_status,
+            }
+        }
+        
         result["opportunities"].append(opportunity)
         
         # Decision logic
         if score.recommendation == "VETO":
-            result["decisions"].append(f"VETO: {mint[:8]} — {score.reasoning}")
+            result["decisions"].append(f"🐗 VETO: {mint[:8]} — {score.reasoning}")
         elif score.recommendation == "DISCARD":
-            result["decisions"].append(f"DISCARD: {mint[:8]} — permission {score.permission_score} < 60")
+            result["decisions"].append(f"🐗 NOPE: {mint[:8]} — permission {score.permission_score} < 60")
         elif score.recommendation == "WATCHLIST":
-            result["decisions"].append(f"WATCHLIST: {mint[:8]} — permission {score.permission_score} (60-84), ordering {score.ordering_score}, primary {len(score.primary_sources)}")
+            result["decisions"].append(f"🐗 WATCHLIST: {mint[:8]} — permission {score.permission_score} (60-84), ordering {score.ordering_score}, primary {len(score.primary_sources)}")
         elif score.recommendation == "AUTO_EXECUTE":
             if dry_run:
                 result["decisions"].append(
-                    f"DRY-RUN LOG: {mint[:8]} — would execute {score.position_size_sol:.4f} SOL (permission {score.permission_score}, ordering {score.ordering_score}, primary {len(score.primary_sources)})"
+                    f"🐗🔥 DRY-RUN TRADE: {mint[:8]} — would YOLO {score.position_size_sol:.4f} SOL "
+                    f"(permission {score.permission_score}, ordering {score.ordering_score}, "
+                    f"primary {len(score.primary_sources)}) OINK!"
                 )
             else:
                 result["decisions"].append(
-                    f"EXECUTE: {mint[:8]} — {score.position_size_sol:.4f} SOL (permission {score.permission_score}, ordering {score.ordering_score})"
+                    f"🐗🔥 EXECUTE: {mint[:8]} — {score.position_size_sol:.4f} SOL "
+                    f"(permission {score.permission_score}, ordering {score.ordering_score}) OINK!"
                 )
                 # TODO: Call execute_swap here in live mode
     

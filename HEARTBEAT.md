@@ -1,7 +1,7 @@
-# ChadBoar Heartbeat Checklist
+# ChadBoar Heartbeat Checklist — Degen YOLO Cycles
 
-Follow these steps IN ORDER on every heartbeat. Do not skip steps.
-Do not improvise. Do not add steps. This is the cycle.
+Follow these steps IN ORDER on every heartbeat (5-min cycles).
+Do not skip steps. Do not improvise. This is the cycle. OINK.
 
 **DELIVERY RULE:** After completing all steps, send your report to Telegram using
 the `message` tool with `to: "915725856"` (G's chat ID). This is required because
@@ -127,6 +127,22 @@ cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.skills.bead_write --typ
     - `WATCHLIST` (60-84): Log with 🟢 INFO alert to G showing score breakdown.
     - `AUTO_EXECUTE` (≥85): Proceed to step 12 (subject to tier gates + dry-run check).
 
+## 9b. Grok Alpha Override (NEW — Degen Brain)
+- For tokens scoring WATCHLIST (60-84) where Rug Warden = PASS:
+  - Send signal summary to Grok 4.1 FAST (high reasoning) via `lib/llm_utils.py`
+  - Grok returns YAML: `verdict: TRADE | NOPE`, reasoning, confidence
+  - If `TRADE`: upgrade to AUTO_EXECUTE. Grok's reasoning appended to score.
+  - If `NOPE`: stays WATCHLIST. No action.
+  - **INVARIANT PRESERVED**: Grok CANNOT override Rug Warden VETO. Period.
+  - **INVARIANT PRESERVED**: Human gate >$100 still enforced after Grok override.
+- Telegram format for Grok overrides:
+  ```
+  🐗🔥 GROK OVERRIDE: $TOKEN — TRADE
+  reasoning: <Grok's reasoning>
+  confidence: <0.0-1.0>
+  size: <SOL amount> | permission: <score>
+  ```
+
 ## 10. Edge Bank Query (Before Scoring)
 ```bash
 cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.skills.bead_query --context '<SIGNAL_SUMMARY>'
@@ -217,8 +233,8 @@ Also update if applicable:
 - If dry-run cycle completed and `dry_run_cycles_completed >= dry_run_target_cycles`:
   → Include 📊 DIGEST with sample scored opportunities from the 10 cycles.
 - If nothing happened (no signals, no positions, no alerts):
-  → Send exactly: `🟢 HB #{cycle} | {pot} SOL | 0 pos | no signals | dry-run {n}/10`
-  → Example: `🟢 HB #3 | 14.0 SOL | 0 pos | no signals | dry-run 3/10`
+  → Send exactly: `🐗 HB #{cycle} | {pot} SOL | 0 pos | no signals | dry-run {n}/10 | OINK`
+  → Example: `🐗 HB #3 | 0.1 SOL | 0 pos | no signals | dry-run 3/10 | OINK`
 
 ## 15. Write Checkpoint (ALWAYS — even on HEARTBEAT_OK)
 Write `state/checkpoint.md` with your current strategic thinking.
