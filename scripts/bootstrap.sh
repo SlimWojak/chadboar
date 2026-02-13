@@ -85,7 +85,7 @@ fi
 
 # ── 7. Clone repo ───────────────────────────────────────────────────
 
-REPO_DIR="/home/autistboar/autisticboar"
+REPO_DIR="/home/autistboar/chadboar"
 if [ ! -d "$REPO_DIR" ]; then
     echo "[+] Cloning repository..."
     sudo -u autistboar git clone https://github.com/SlimWojak/AutisticBoar.git "$REPO_DIR"

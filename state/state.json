@@ -1,0 +1,22 @@
+{
+  "starting_balance_sol": 0.1,
+  "current_balance_sol": 0.1,
+  "current_balance_usd": 0.0,
+  "sol_price_usd": 0.0,
+  "positions": [],
+  "daily_exposure_sol": 0.0,
+  "daily_date": "",
+  "daily_loss_pct": 0.0,
+  "consecutive_losses": 0,
+  "halted": false,
+  "halted_at": "",
+  "halt_reason": "",
+  "total_trades": 0,
+  "total_wins": 0,
+  "total_losses": 0,
+  "last_trade_time": "",
+  "last_heartbeat_time": "",
+  "dry_run_mode": true,
+  "dry_run_cycles_completed": 0,
+  "dry_run_target_cycles": 10
+}

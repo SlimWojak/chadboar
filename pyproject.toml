@@ -1,5 +1,5 @@
 [project]
-name = "autisticboar"
+name = "chadboar"
 version = "0.1.0"
 description = "AutistBoar — Solana memecoin scout powered by OpenClaw"
 requires-python = ">=3.12"

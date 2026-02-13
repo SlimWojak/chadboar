@@ -17,7 +17,7 @@ Use when you need to look up technical documentation for:
 
 ## How to use
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.brave_search --query "<search query>"
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.skills.brave_search --query "<search query>"
 ```
 
 ## Output format

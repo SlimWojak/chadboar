@@ -4,7 +4,7 @@
 
 ### Local Development
 ```bash
-cd ~/autisticboar
+cd ~/chadboar
 source .venv/bin/activate
 openclaw gateway --verbose
 ```
@@ -52,13 +52,13 @@ openclaw health
 ### Kill Switch (Immediate Halt)
 ```bash
 # Activate — stops all trading immediately
-touch ~/autisticboar/killswitch.txt
+touch ~/chadboar/killswitch.txt
 
 # With reason
-echo "Manual halt — investigating anomaly" > ~/autisticboar/killswitch.txt
+echo "Manual halt — investigating anomaly" > ~/chadboar/killswitch.txt
 
 # Deactivate — resume trading
-rm ~/autisticboar/killswitch.txt
+rm ~/chadboar/killswitch.txt
 ```
 
 ### Gateway Stop
@@ -68,7 +68,7 @@ systemctl --user stop openclaw
 
 ### Verify Signer Isolation
 ```bash
-cd ~/autisticboar
+cd ~/chadboar
 source .venv/bin/activate
 python3 -c "from lib.signer.keychain import verify_isolation; print(verify_isolation())"
 ```
@@ -110,7 +110,7 @@ openclaw cron add \
 ssh autistboar@<VPS_IP>
 
 # Pull latest code
-cd ~/autisticboar && git pull
+cd ~/chadboar && git pull
 
 # Update Python deps
 source .venv/bin/activate && pip install -r requirements.txt
@@ -135,7 +135,7 @@ openclaw logs --tail 100
 journalctl --user -u openclaw -f
 
 # Python skill output (when debugging)
-cd ~/autisticboar && source .venv/bin/activate
+cd ~/chadboar && source .venv/bin/activate
 python3 -m lib.guards.killswitch
 python3 -m lib.guards.drawdown
 python3 -m lib.guards.risk

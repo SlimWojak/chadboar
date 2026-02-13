@@ -122,7 +122,7 @@ The OpenClaw workspace IS our project root. We set
 `agents.defaults.workspace` to point here.
 
 ```
-~/autisticboar/                        # OpenClaw workspace root
+~/chadboar/                        # OpenClaw workspace root
 ├── AGENTS.md                          # Operating rules + governance invariants
 ├── SOUL.md                            # Persona — smart scout, not drone
 ├── USER.md                            # Who G is, how to address them
@@ -245,7 +245,7 @@ The OpenClaw workspace IS our project root. We set
 
   agents: {
     defaults: {
-      workspace: "~/autisticboar",
+      workspace: "~/chadboar",
 
       // PRIMARY: Sonnet for interactive Telegram chat (the face G talks to)
       // Fallback chain: if Sonnet is down → DeepSeek → Gemini Flash
@@ -549,7 +549,7 @@ heartbeat working in dry-run mode. No real API calls yet.
 - [ ] Verify Node ≥22 installed
 - [ ] `npm install -g openclaw@latest`
 - [ ] `openclaw onboard` — initial setup
-- [ ] Set `agents.defaults.workspace` → `~/autisticboar`
+- [ ] Set `agents.defaults.workspace` → `~/chadboar`
 - [ ] Verify: `openclaw doctor` — zero critical issues
 
 ### 1.3 Workspace Personality Files
@@ -701,7 +701,7 @@ run the full heartbeat cycle with test data.
 
 ### 4.2 Configuration
 - [ ] `~/.openclaw/.env` on VPS with real API keys (chmod 600)
-- [ ] `~/.openclaw/openclaw.json` pointing workspace to ~/autisticboar
+- [ ] `~/.openclaw/openclaw.json` pointing workspace to ~/chadboar
 - [ ] Private key set in signer env var (manually by G)
 - [ ] `openclaw doctor --fix` — verify clean
 - [ ] `chmod 700 ~/.openclaw && chmod 600 ~/.openclaw/openclaw.json`

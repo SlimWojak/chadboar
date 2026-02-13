@@ -239,7 +239,7 @@ python3 -m lib.skills.perplexity_query --query "Solana MEV protection strategies
 All skills are Python modules in `lib/skills/` and `lib/guards/`.  
 Executed via bash from workspace root:
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m <module>
+cd /home/autistboar/chadboar && .venv/bin/python3 -m <module>
 ```
 
 ### API Dependencies

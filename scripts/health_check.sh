@@ -5,7 +5,7 @@
 
 set -e
 
-WORKSPACE="/home/autistboar/autisticboar"
+WORKSPACE="/home/autistboar/chadboar"
 cd "$WORKSPACE"
 
 echo "🐗 AutistBoar Health Check"

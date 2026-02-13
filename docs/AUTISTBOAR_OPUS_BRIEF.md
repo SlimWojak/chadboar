@@ -70,7 +70,7 @@ This is NOT a janky bot. It is a properly governed system with:
 ## BUILD ENVIRONMENT
 
 ```yaml
-DEVELOP: Mac Studio M4 (~/autisticboar/)
+DEVELOP: Mac Studio M4 (~/chadboar/)
 TEST: Local dry-run mode (mock APIs, no real keys, no real trades)
 REPO: github.com/SlimWojak/AutisticBoar
 DEPLOY: git pull on Hostinger VPS (Ubuntu 24.04, Singapore)
@@ -84,7 +84,7 @@ RULE: "Dev machine = safe sandbox. VPS = live fire. Never mix."
 ## DIRECTORY STRUCTURE
 
 ```
-autisticboar/
+chadboar/
 ├── .env.example                 # Template (never real keys)
 ├── .gitignore                   # .env, beads/, *.db, keys/
 ├── README.md                    # Setup + operation guide

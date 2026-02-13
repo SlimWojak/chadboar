@@ -3,7 +3,7 @@
 ## Python Execution Layer
 
 All custom skills call Python scripts via bash. The Python layer lives in `lib/`.
-Run commands from the workspace root (`~/autisticboar/`).
+Run commands from the workspace root (`~/chadboar/`).
 
 ### Skill Commands
 

@@ -12,7 +12,7 @@ step 14 via the message tool.
 
 **CRITICAL:** All commands must run from workspace root with venv active:
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m <module>
+cd /home/autistboar/chadboar && .venv/bin/python3 -m <module>
 ```
 
 ## 0. Dry-Run Mode Check
@@ -25,20 +25,20 @@ cd /home/autistboar/autisticboar && .venv/bin/python3 -m <module>
 
 ## 1. Killswitch Check
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.guards.killswitch
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.killswitch
 ```
 - If status is `ACTIVE` → respond with `🔴 KILLSWITCH ACTIVE — halted` and stop. Do nothing else.
 
 ## 1a. Zombie Gateway Check
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.guards.zombie_gateway
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.zombie_gateway
 ```
 - If status is `ZOMBIE` → send via message tool (to: "915725856"): "🔴 CRITICAL: Multiple gateway PIDs detected: {pids}. Stale process causing conflicts. Kill the zombie."
 - Do NOT continue the heartbeat cycle until resolved.
 
 ## 1b. Session Health Check
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.guards.session_health
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.session_health
 ```
 - If status is `COLLAPSING` → send via message tool (to: "915725856"): "🟡 WARNING: Session context may be collapsing — {consecutive_short} consecutive short outputs. Consider session reset."
 - Continue the heartbeat cycle (this is a warning, not a halt).
@@ -50,7 +50,7 @@ cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.guards.session_heal
 
 ## 3. Drawdown Guard (INV-DRAWDOWN-50)
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.guards.drawdown
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.drawdown
 ```
 - If status is `HALTED` → respond with `🔴 DRAWDOWN HALT — trading paused` and stop.
 - If `alert: true` → send via message tool (to: "915725856"):
@@ -58,21 +58,21 @@ cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.guards.drawdown
 
 ## 4. Risk Limits Check (INV-DAILY-EXPOSURE-30)
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.guards.risk
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.guards.risk
 ```
 - If status is `BLOCKED` → no new entries this cycle. Continue to step 7 (watchdog only).
 - If warnings present → note them, reduce sizing if needed.
 
 ## 5. Smart Money Oracle
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.oracle_query
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.skills.oracle_query
 ```
 - Review whale accumulation signals.
 - Extract: number of distinct whales accumulating per token.
 
 ## 6. Narrative Hunter
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.narrative_scan
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.skills.narrative_scan
 ```
 - Review social + onchain momentum.
 - Extract: volume spike multiple, KOL detection, narrative age.
@@ -90,11 +90,11 @@ cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.narrative_sc
 ## 8. Execute Exits
 - For any positions flagged for exit in step 7:
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.execute_swap --direction sell --token <MINT> --amount <AMOUNT>
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.skills.execute_swap --direction sell --token <MINT> --amount <AMOUNT>
 ```
 - Write autopsy bead for each exit:
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.bead_write --type exit --data '<JSON>'
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.skills.bead_write --type exit --data '<JSON>'
 ```
 
 ## 9. Conviction Scoring (Replaces Old "Evaluate Opportunities")
@@ -109,7 +109,7 @@ cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.bead_write -
   
   - Run conviction scorer:
     ```bash
-    cd /home/autistboar/autisticboar && .venv/bin/python3 lib/scoring.py \
+    cd /home/autistboar/chadboar && .venv/bin/python3 lib/scoring.py \
       --whales <N> \
       --volume-spike <X> \
       --kol \  # if detected
@@ -129,7 +129,7 @@ cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.bead_write -
 
 ## 10. Edge Bank Query (Before Scoring)
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.bead_query --context '<SIGNAL_SUMMARY>'
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.skills.bead_query --context '<SIGNAL_SUMMARY>'
 ```
 - Extract: historical match percentage for similar setups.
 - Feed this into conviction scoring as `edge_bank_match_pct`.
@@ -137,7 +137,7 @@ cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.bead_query -
 ## 11. Pre-Trade Validation (INV-RUG-WARDEN-VETO)
 - For any candidate token:
 ```bash
-cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.warden_check --token <MINT_ADDRESS>
+cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.skills.warden_check --token <MINT_ADDRESS>
 ```
 - Extract: `PASS`, `WARN`, or `FAIL`.
 - Feed this into conviction scoring as `rug_warden_status`.
@@ -152,7 +152,7 @@ cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.warden_check
   
   - Execute:
     ```bash
-    cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.execute_swap \
+    cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.skills.execute_swap \
       --direction buy \
       --token <MINT> \
       --amount <SOL_AMOUNT>
@@ -160,7 +160,7 @@ cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.warden_check
   
   - Write autopsy bead:
     ```bash
-    cd /home/autistboar/autisticboar && .venv/bin/python3 -m lib.skills.bead_write \
+    cd /home/autistboar/chadboar && .venv/bin/python3 -m lib.skills.bead_write \
       --type entry \
       --data '<JSON_WITH_CONVICTION_BREAKDOWN>'
     ```
