@@ -18,4 +18,7 @@ Edge Bank — write trade autopsy bead.
 ## bead_query
 Edge Bank — query similar historical patterns.
 
+## self_repair
+Self-Repair — gateway diagnostics via Grok, whitelist commands, human-gate restarts.
+
 See TOOLS.md for CLI usage.

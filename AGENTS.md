@@ -192,6 +192,8 @@ Then restart the gateway. Full forensics: `docs/FORENSICS_2026-02-13_TELEGRAM_IN
 - `openclaw health` — Telegram connection, session list
 - `openclaw sessions --json` — session token usage, model, staleness
 - `journalctl --user -u openclaw-gateway.service --no-pager -n 100` — gateway logs
+- `python3 -m lib.skills.self_repair` — Grok-powered gateway diagnosis + fix suggestion
+- `python3 -m lib.skills.self_repair --status-only` — quick gateway status check
 - `cat ~/.openclaw/telegram/update-offset-default.json` — Telegram update offset (check if corrupted)
 - `OPENCLAW_LOG_LEVEL=debug openclaw gateway --port 18789 --verbose` — verbose mode (stop service first)
 

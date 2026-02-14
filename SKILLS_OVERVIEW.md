@@ -1,7 +1,7 @@
 # ChadBoar Skills Overview
 
-**Last Updated:** 2026-02-11  
-**Total Skills:** 7 (6 active + 1 whitelisted reference)
+**Last Updated:** 2026-02-14
+**Total Skills:** 8 (7 active + 1 whitelisted reference)
 
 ---
 
@@ -190,9 +190,38 @@ python3 -m lib.skills.bead_query --context '<SIGNAL_SUMMARY>'
 
 ---
 
+### 6. Self-Repair
+**Purpose:** Automated gateway diagnosis via Grok — identify root cause of gateway failures and suggest fix commands
+**When to Use:** Gateway collapse (NO_REPLY loops), zombie PIDs, crashes, or on-demand diagnostics
+**Data Sources:** journalctl, systemctl (read-only), Grok 4.1 FAST for analysis
+**Output:** Structured diagnosis with root cause, severity, and whitelisted fix command
+
+**Whitelist (hardcoded, not configurable):**
+- **Read-only (auto-execute):** `journalctl`, `systemctl status`, `git status`, `git log`
+- **Human-gated (suggest only):** `systemctl restart`, `rm <session_file>`
+- **Blocked:** Everything else (no cat, pip, curl, sudo, git push, etc.)
+
+**Human-Gate Behavior:**
+- Restart commands and session file deletion are NEVER auto-executed
+- Skill sends the command to G via Telegram with `(HUMAN-GATE: copy-paste to execute)`
+- G decides whether to run it
+
+**Bead Logging:** Writes YAML to `beads/self-repair/` (no vector embeddings)
+
+**Commands:**
+```bash
+# Full diagnosis (logs + Grok + Telegram alert)
+python3 -m lib.skills.self_repair
+
+# Status-only (systemctl, no Grok)
+python3 -m lib.skills.self_repair --status-only
+```
+
+---
+
 ## Reference Skills (2)
 
-### 6. Brave Search (Whitelisted)
+### 7. Brave Search (Whitelisted)
 **Purpose:** Search reference documentation only (NOT general web)  
 **When to Use:** When agent needs to look up API docs or technical references  
 **Whitelist Domains:**
@@ -215,7 +244,7 @@ python3 -m lib.skills.brave_search --query "Birdeye API token security endpoint"
 
 ---
 
-### 7. Perplexity Research
+### 8. Perplexity Research
 **Purpose:** Comprehensive research reports with citations (technical deep-dives)  
 **When to Use:** When G requests research on a topic, or agent needs to compile reference material  
 **Output:** Markdown-formatted reports with source citations  
