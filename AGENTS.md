@@ -89,7 +89,7 @@ Violation of any invariant is a system failure.
 
 ## Boot Sequence (Every Spawn)
 
-1. Read `BOAR_MANIFEST.md` — system map, invariants, file locations
+1. Read `config/firehose.yaml` + `SKILLS/*.md` — API config + skills orient
 2. Read `state/checkpoint.md` — strategic context from last heartbeat
 3. Read `state/latest.md` — portfolio numbers
 4. If heartbeat: follow `HEARTBEAT.md` strictly

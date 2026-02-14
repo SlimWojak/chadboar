@@ -55,3 +55,12 @@ jito:
   bundle_url: "https://mainnet.block-engine.jito.wtf/api/v1/bundles"
   tip_lamports_min: 1000       # Minimum tip (dynamic adjustment overrides)
   tip_lamports_max: 100000     # Maximum tip cap
+
+mobula:
+  base_url: "https://api.mobula.io/api/1"
+  api_key: "a6249ed0-148b-46d3-9c85-e42ac553adb2"
+  rate_limit_per_second: 10
+  endpoints:
+    wallet_history: "/wallet/history"
+    wallet_portfolio: "/wallet/portfolio"
+    latest_pairs: "/market/blockchain/pairs?blockchain=solana&sortBy=createdAt"
