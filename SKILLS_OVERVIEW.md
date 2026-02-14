@@ -8,18 +8,35 @@
 ## Core Trading Skills (5)
 
 ### 1. Smart Money Oracle
-**Purpose:** Detect whale accumulation and smart money flows on Solana tokens  
-**When to Use:** Heartbeat step 5, or on-demand for specific token analysis  
-**Data Source:** Nansen API  
-**Output:** List of tokens with distinct whale accumulation counts  
+**Purpose:** Detect whale accumulation and smart money flows on Solana tokens using Nansen Token God Mode (TGM) suite
+**When to Use:** Heartbeat step 5, or on-demand for specific token analysis
+**Data Source:** Nansen API (Token Screener, Flow Intelligence, Who Bought/Sold, Jupiter DCAs, Smart Money Holdings)
+**Output:** Enriched token signals with flow_intel, buyer_depth, dca_count, and holdings_delta
 
-**Key Metrics:**
-- Number of distinct smart money wallets accumulating
-- Total buy volume per token
-- Whale classification (tier-based)
+**4-Phase Pipeline:**
+1. **Discovery** — Token Screener (5 credits): Filter Solana tokens by smart money inflows, volume, liquidity
+2. **Validation** — Flow Intelligence + Who Bought/Sold (1 credit each, parallel per token): Segment flow breakdown + buyer/seller depth with labels
+3. **DCA Detection** — Jupiter DCAs (1-5 credits per token): Active smart money DCA orders on Jupiter (top 3 candidates)
+4. **Holdings Scan** — Smart Money Holdings (5 credits): Portfolio-wide 24h balance changes across smart money wallets
+
+**Fallback:** If Token Screener fails, falls back to legacy `get_smart_money_transactions()` (dex-trades) approach
+
+**Credit Budget per Cycle:** ~23-35 credits (~3,360-5,040/day at 10min intervals)
+
+**Enriched Output Fields (per token):**
+- `flow_intel`: `{smart_trader_net_usd, whale_net_usd, exchange_net_usd, fresh_wallet_net_usd, top_pnl_net_usd}`
+- `buyer_depth`: `{smart_money_buyers, total_buy_volume_usd, smart_money_sellers, total_sell_volume_usd}`
+- `dca_count`: Active smart money DCA orders
+- `discovery_source`: `"screener"` or `"dex-trades"` (fallback)
+- `holdings_delta`: Portfolio-wide smart money balance shifts (top-level array)
+
+**Red Flags (fed to scoring):**
+- `fresh_wallet_net_usd > $50,000` → -10 pts (fresh wallet concentration)
+- `exchange_net_usd > 0` (inflow to exchanges = distribution) → -10 pts
 
 **Thresholds:**
 - ≥3 whales accumulating → PRIMARY signal (permission gate eligible)
+- `buyer_depth.smart_money_buyers` used for more accurate whale count
 
 **Command:**
 ```bash
@@ -245,7 +262,7 @@ cd /home/autistboar/chadboar && .venv/bin/python3 -m <module>
 ### API Dependencies
 - **Helius API:** Rug Warden (token metadata), Blind Executioner (RPC)
 - **Birdeye API:** Narrative Hunter (volume data), Rug Warden (security checks)
-- **Nansen API:** Smart Money Oracle (whale tracking)
+- **Nansen API:** Smart Money Oracle (Token Screener, Flow Intelligence, Who Bought/Sold, Jupiter DCAs, Smart Money Holdings, dex-trades fallback)
 - **X API:** Narrative Hunter (social sentiment)
 - **Jito Block Engine:** Blind Executioner (MEV protection)
 
@@ -267,10 +284,12 @@ Heartbeat runner parses JSON to make decisions.
 - Missing Narrative: 0.8x multiplier
 - ≥2 sources failed: OBSERVE-ONLY mode
 
-**Red Flags (B1):**  
+**Red Flags (B1):**
 - Volume concentration (Gini ≥0.8): −15 pts
 - Dumper wallets (1-2): −15 pts
 - Dumper wallets (≥3): VETO
+- Fresh wallet inflow >$50k (TGM): −10 pts
+- Exchange inflow / distribution pattern (TGM): −10 pts
 
 **Vetoes (5 total):**
 1. Rug Warden FAIL

@@ -1,6 +1,8 @@
 """Smart Money Oracle - CLI entry point.
 
-Queries Nansen and Mobula for whale accumulation signals on Solana.
+Queries Nansen Token God Mode (TGM) suite for whale accumulation signals on Solana.
+4-phase pipeline: Discovery → Validation → DCA Detection → Holdings Scan.
+Falls back to legacy dex-trades scan if Token Screener is unavailable.
 
 Usage:
     python3 -m lib.skills.oracle_query
@@ -23,8 +25,8 @@ import requests
 from lib.clients.nansen import NansenClient
 from lib.clients.helius import HeliusClient
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (override=True: always use .env over stale inherited vars)
+load_dotenv(override=True)
 
 class MobulaClient:
     def __init__(self, config: Dict[str, Any]):
@@ -59,7 +61,7 @@ class MobulaClient:
 
 
 async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
-    """Query smart money signals."""
+    """Query smart money signals using TGM pipeline with dex-trades fallback."""
     firehose_path = os.path.join(os.path.dirname(__file__), '../../config/firehose.yaml')
     with open(firehose_path, 'r') as f:
         firehose = yaml.safe_load(f)
@@ -67,12 +69,17 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
     client = NansenClient()
     try:
         nansen_signals = []
+        holdings_delta: list[dict[str, Any]] = []
+
         if token_mint:
+            # Single-token mode: use existing netflow + enrich with TGM
             data = await client.get_token_smart_money(token_mint)
             nansen_signals = _parse_token_signals(data, token_mint)
+            # Enrich single token with flow intel + who bought/sold
+            nansen_signals = await _enrich_signals(client, nansen_signals)
         else:
-            data = await client.get_smart_money_transactions()
-            nansen_signals = _parse_broad_signals(data)
+            # Broad scan: TGM pipeline with dex-trades fallback
+            nansen_signals, holdings_delta = await _run_tgm_pipeline(client)
 
         mobula_signals = []
         if 'mobula' in firehose and not token_mint:
@@ -97,9 +104,7 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
                 holders_resp = await helius.get_token_holders(token_mint, limit=100)
                 holders = holders_resp.get("holders", [])
                 holder_count = len(holders)
-                # Proxy staking %: fraction of top holders with significant balance (conviction proxy)
-                # Full stake check requires per-wallet RPC; approximated as holder distribution
-                staked_pct = min(holder_count / 10.0, 100.0) if holder_count > 0 else 0.0  # rough: more holders = more conviction
+                staked_pct = min(holder_count / 10.0, 100.0) if holder_count > 0 else 0.0
                 helius_signal = {
                     "token_mint": token_mint,
                     "staking_pct_holders": round(staked_pct, 1),
@@ -108,7 +113,7 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
                     "top_holder_count": holder_count,
                     "source": "helius"
                 }
-                mobula_signals.append(helius_signal)  # append to whale signals
+                mobula_signals.append(helius_signal)
             finally:
                 await helius.close()
 
@@ -117,6 +122,7 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
         return {
             "status": "OK",
             "nansen_signals": nansen_signals,
+            "holdings_delta": holdings_delta,
             "mobula_signals": mobula_signals,
             "total_signals": len(all_signals),
         }
@@ -124,16 +130,211 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
         return {
             "status": "ERROR",
             "error": str(e),
-            "signals": [],
-            "count": 0,
+            "nansen_signals": [],
+            "holdings_delta": [],
+            "mobula_signals": [],
+            "total_signals": 0,
         }
     finally:
         await client.close()
 
 
-def _parse_broad_signals(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Parse broad smart money transaction data into signals."""
-    # Group by token, count unique wallets
+async def _run_tgm_pipeline(client: NansenClient) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Run full 4-phase TGM pipeline. Falls back to dex-trades if screener fails.
+
+    Returns:
+        (nansen_signals, holdings_delta)
+    """
+    # --- Phase 1: Discovery (Token Screener, 5 credits) ---
+    candidates: list[dict[str, Any]] = []
+    discovery_source = "screener"
+    try:
+        screener_data = await client.screen_tokens(
+            chains=["solana"],
+            timeframe="1h",
+        )
+        candidates = _parse_screener_candidates(screener_data)
+    except Exception:
+        # Fallback to legacy dex-trades scan
+        discovery_source = "dex-trades"
+
+    if not candidates:
+        # Screener returned nothing or failed — use dex-trades fallback
+        try:
+            dex_data = await client.get_smart_money_transactions(limit=50)
+            candidates = _parse_dex_trades_candidates(dex_data)
+            discovery_source = "dex-trades"
+        except Exception:
+            return [], []
+
+    # Limit to top 5 candidates for enrichment
+    candidates = candidates[:5]
+
+    # --- Phase 2: Validation (Flow Intel + Who Bought/Sold, parallel, 1 credit each) ---
+    candidates = await _enrich_signals(client, candidates)
+
+    # --- Phase 3: DCA Detection (top 3 candidates) ---
+    dca_tasks = []
+    for sig in candidates[:3]:
+        mint = sig.get("token_mint", "")
+        if mint:
+            dca_tasks.append(_fetch_dca_count(client, mint))
+    if dca_tasks:
+        dca_results = await asyncio.gather(*dca_tasks, return_exceptions=True)
+        for i, dca_result in enumerate(dca_results):
+            if i < len(candidates) and isinstance(dca_result, int):
+                candidates[i]["dca_count"] = dca_result
+
+    # Tag discovery source
+    for sig in candidates:
+        sig["discovery_source"] = discovery_source
+
+    # --- Phase 4: Holdings Scan (5 credits) ---
+    holdings_delta: list[dict[str, Any]] = []
+    try:
+        holdings_data = await client.get_smart_money_holdings(chains=["solana"])
+        holdings_delta = _parse_holdings_delta(holdings_data)
+    except Exception:
+        pass
+
+    return candidates, holdings_delta
+
+
+async def _enrich_signals(
+    client: NansenClient,
+    signals: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Enrich signals with flow intelligence and who bought/sold data (parallel)."""
+    if not signals:
+        return signals
+
+    async def enrich_one(sig: dict[str, Any]) -> dict[str, Any]:
+        mint = sig.get("token_mint", "")
+        if not mint:
+            return sig
+
+        # Run flow intel + who_bought_sold concurrently
+        flow_task = _fetch_flow_intel(client, mint)
+        wbs_task = _fetch_buyer_depth(client, mint)
+        flow_result, wbs_result = await asyncio.gather(flow_task, wbs_task, return_exceptions=True)
+
+        if isinstance(flow_result, dict):
+            sig["flow_intel"] = flow_result
+        else:
+            sig.setdefault("flow_intel", _empty_flow_intel())
+
+        if isinstance(wbs_result, dict):
+            sig["buyer_depth"] = wbs_result
+        else:
+            sig.setdefault("buyer_depth", _empty_buyer_depth())
+
+        sig.setdefault("dca_count", 0)
+        sig.setdefault("discovery_source", "screener")
+        return sig
+
+    enriched = await asyncio.gather(*(enrich_one(s) for s in signals), return_exceptions=True)
+    return [s for s in enriched if isinstance(s, dict)]
+
+
+async def _fetch_flow_intel(client: NansenClient, mint: str) -> dict[str, Any]:
+    """Fetch and parse flow intelligence for a token."""
+    data = await client.get_flow_intelligence(token_address=mint)
+    segments = data.get("data", data.get("segments", {}))
+    if isinstance(segments, list):
+        # Flatten list of segment dicts
+        flat: dict[str, float] = {}
+        for seg in segments:
+            label = seg.get("label", seg.get("type", "")).lower().replace(" ", "_")
+            flat[label] = float(seg.get("net_usd", seg.get("net_flow_usd", 0)))
+        return {
+            "smart_trader_net_usd": flat.get("smart_trader", flat.get("smart_money", 0.0)),
+            "whale_net_usd": flat.get("whale", 0.0),
+            "exchange_net_usd": flat.get("exchange", 0.0),
+            "fresh_wallet_net_usd": flat.get("fresh_wallet", 0.0),
+            "top_pnl_net_usd": flat.get("top_pnl", 0.0),
+        }
+    # Dict-style response
+    return {
+        "smart_trader_net_usd": float(segments.get("smart_trader_net_usd", segments.get("smart_money_net_usd", 0))),
+        "whale_net_usd": float(segments.get("whale_net_usd", 0)),
+        "exchange_net_usd": float(segments.get("exchange_net_usd", 0)),
+        "fresh_wallet_net_usd": float(segments.get("fresh_wallet_net_usd", 0)),
+        "top_pnl_net_usd": float(segments.get("top_pnl_net_usd", 0)),
+    }
+
+
+async def _fetch_buyer_depth(client: NansenClient, mint: str) -> dict[str, Any]:
+    """Fetch and parse who bought/sold data for a token."""
+    data = await client.get_who_bought_sold(token_address=mint)
+    summary = data.get("data", data.get("summary", {}))
+    if isinstance(summary, list):
+        # Aggregate from list of buyer/seller entries
+        sm_buyers = 0
+        sm_sellers = 0
+        total_buy_vol = 0.0
+        total_sell_vol = 0.0
+        for entry in summary:
+            is_smart = entry.get("is_smart_money", False) or "smart" in entry.get("label", "").lower()
+            side = entry.get("side", entry.get("type", "")).lower()
+            volume = float(entry.get("volume_usd", entry.get("amount_usd", 0)))
+            if side == "buy":
+                total_buy_vol += volume
+                if is_smart:
+                    sm_buyers += 1
+            elif side == "sell":
+                total_sell_vol += volume
+                if is_smart:
+                    sm_sellers += 1
+        return {
+            "smart_money_buyers": sm_buyers,
+            "total_buy_volume_usd": total_buy_vol,
+            "smart_money_sellers": sm_sellers,
+            "total_sell_volume_usd": total_sell_vol,
+        }
+    # Dict-style response
+    return {
+        "smart_money_buyers": int(summary.get("smart_money_buyers", 0)),
+        "total_buy_volume_usd": float(summary.get("total_buy_volume_usd", 0)),
+        "smart_money_sellers": int(summary.get("smart_money_sellers", 0)),
+        "total_sell_volume_usd": float(summary.get("total_sell_volume_usd", 0)),
+    }
+
+
+async def _fetch_dca_count(client: NansenClient, mint: str) -> int:
+    """Fetch active smart money DCA count for a token."""
+    data = await client.get_jupiter_dcas(token_address=mint)
+    orders = data.get("data", data.get("orders", []))
+    if isinstance(orders, list):
+        return len(orders)
+    return 0
+
+
+def _parse_screener_candidates(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Parse Token Screener response into candidate signals."""
+    tokens = data.get("data", data.get("tokens", []))
+    if not isinstance(tokens, list):
+        return []
+
+    signals = []
+    for token in tokens:
+        mint = token.get("token_address", token.get("address", ""))
+        if not mint:
+            continue
+        signals.append({
+            "token_mint": mint,
+            "token_symbol": token.get("symbol", token.get("token_symbol", "UNKNOWN")),
+            "wallet_count": int(token.get("smart_money_wallets", token.get("wallet_count", 0))),
+            "total_buy_usd": float(token.get("smart_money_inflow_usd", token.get("buy_volume_usd", 0))),
+            "confidence": "high" if int(token.get("smart_money_wallets", 0)) >= 5 else "medium",
+            "source": "nansen",
+        })
+
+    signals.sort(key=lambda s: s["wallet_count"], reverse=True)
+    return signals[:10]
+
+
+def _parse_dex_trades_candidates(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Parse legacy dex-trades response into candidate signals (fallback)."""
     SOL_MINT = "So11111111111111111111111111111111111111112"
     token_wallets: dict[str, dict[str, Any]] = {}
     transactions = data.get("data", data.get("transactions", []))
@@ -141,22 +342,18 @@ def _parse_broad_signals(data: dict[str, Any]) -> list[dict[str, Any]]:
         return []
 
     for tx in transactions:
-        # Infer BUY: sold SOL, bought token
         token_sold = tx.get("token_sold_address", "")
         token_bought = tx.get("token_bought_address", "")
-        
+
         if token_sold == SOL_MINT and token_bought != SOL_MINT:
-            # This is a BUY (spent SOL to get token)
             mint = token_bought
             symbol = tx.get("token_bought_symbol", "UNKNOWN")
             value_usd = tx.get("trade_value_usd", 0)
         elif token_bought == SOL_MINT and token_sold != SOL_MINT:
-            # This is a SELL (sold token for SOL) — skip
             continue
         else:
-            # Token-to-token swap or unknown — skip
             continue
-        
+
         wallet = tx.get("trader_address", "")
         if not mint or not wallet:
             continue
@@ -172,7 +369,6 @@ def _parse_broad_signals(data: dict[str, Any]) -> list[dict[str, Any]]:
         token_wallets[mint]["wallets"].add(wallet)
         token_wallets[mint]["total_value_usd"] += float(value_usd)
 
-    # Filter: require 3+ independent wallets
     signals = []
     for info in token_wallets.values():
         wallet_count = len(info["wallets"])
@@ -184,11 +380,30 @@ def _parse_broad_signals(data: dict[str, Any]) -> list[dict[str, Any]]:
                 "wallet_count": wallet_count,
                 "total_buy_usd": round(info["total_value_usd"], 2),
                 "confidence": confidence,
-                "source": "nansen"
+                "source": "nansen",
             })
 
     signals.sort(key=lambda s: s["wallet_count"], reverse=True)
     return signals[:10]
+
+
+def _parse_holdings_delta(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Parse smart money holdings into 24h balance changes."""
+    holdings = data.get("data", data.get("holdings", []))
+    if not isinstance(holdings, list):
+        return []
+
+    deltas = []
+    for h in holdings:
+        change = float(h.get("balance_change_24h", h.get("change_24h", 0)))
+        if change > 0:
+            deltas.append({
+                "token_address": h.get("token_address", h.get("address", "")),
+                "token_symbol": h.get("symbol", h.get("token_symbol", "UNKNOWN")),
+                "balance_change_24h": change,
+            })
+    deltas.sort(key=lambda d: d["balance_change_24h"], reverse=True)
+    return deltas[:20]
 
 
 def _parse_token_signals(data: dict[str, Any], mint: str) -> list[dict[str, Any]]:
@@ -203,9 +418,29 @@ def _parse_token_signals(data: dict[str, Any], mint: str) -> list[dict[str, Any]
         "notable_wallets": [
             w.get("label", w.get("address", ""))[:8] for w in wallets[:5]
         ],
+        "total_buy_usd": 0.0,
         "confidence": "high" if len(wallets) >= 5 else ("medium" if len(wallets) >= 3 else "low"),
-        "source": "nansen"
+        "source": "nansen",
     }]
+
+
+def _empty_flow_intel() -> dict[str, float]:
+    return {
+        "smart_trader_net_usd": 0.0,
+        "whale_net_usd": 0.0,
+        "exchange_net_usd": 0.0,
+        "fresh_wallet_net_usd": 0.0,
+        "top_pnl_net_usd": 0.0,
+    }
+
+
+def _empty_buyer_depth() -> dict[str, Any]:
+    return {
+        "smart_money_buyers": 0,
+        "total_buy_volume_usd": 0.0,
+        "smart_money_sellers": 0,
+        "total_sell_volume_usd": 0.0,
+    }
 
 
 def main() -> None:

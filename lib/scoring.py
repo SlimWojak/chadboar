@@ -18,6 +18,11 @@ class SignalInput:
     narrative_age_minutes: int = 0       # Age of narrative signal
     rug_warden_status: str = "UNKNOWN"   # PASS, WARN, FAIL
     edge_bank_match_pct: float = 0.0     # Similarity to past winners
+    # TGM flow intelligence fields
+    exchange_outflow_usd: float = 0.0       # From flow_intel (negative = accumulation)
+    fresh_wallet_inflow_usd: float = 0.0    # From flow_intel (red flag indicator)
+    smart_money_buy_volume_usd: float = 0.0 # From buyer_depth
+    dca_count: int = 0                       # Active smart money DCAs
 
 
 @dataclass
@@ -292,6 +297,20 @@ class ConvictionScorer:
                 permission_score -= penalty
                 reasoning_parts.append(f"RED FLAG: {dumper_wallet_count} dumper wallet(s) (−{penalty} pts)")
         
+        # RED FLAG 3: Fresh Wallet Concentration (TGM)
+        if signals.fresh_wallet_inflow_usd > 50000:
+            penalty = 10
+            red_flags['fresh_wallet_concentration'] = -penalty
+            permission_score -= penalty
+            reasoning_parts.append(f"RED FLAG: Fresh wallet inflow ${signals.fresh_wallet_inflow_usd:,.0f} (−{penalty} pts)")
+
+        # RED FLAG 4: Exchange Inflow / Distribution Pattern (TGM)
+        if signals.exchange_outflow_usd > 0:
+            penalty = 10
+            red_flags['exchange_inflow'] = -penalty
+            permission_score -= penalty
+            reasoning_parts.append(f"RED FLAG: Exchange inflow ${signals.exchange_outflow_usd:,.0f} — distribution pattern (−{penalty} pts)")
+
         # Apply data completeness penalty (Phase 2)
         permission_score = int(permission_score * data_completeness)
         if data_completeness < 1.0:
@@ -354,16 +373,24 @@ def main():
     parser.add_argument("--concentrated-vol", action="store_true", help="Volume is concentrated")
     parser.add_argument("--dumpers", type=int, default=0, help="Number of dumper wallets")
     parser.add_argument("--time-mismatch", action="store_true", help="Oracle + Narrative <5min")
-    
+    parser.add_argument("--exchange-outflow", type=float, default=0.0, help="Exchange net flow USD (positive=inflow)")
+    parser.add_argument("--fresh-wallet-inflow", type=float, default=0.0, help="Fresh wallet inflow USD")
+    parser.add_argument("--sm-buy-volume", type=float, default=0.0, help="Smart money buy volume USD")
+    parser.add_argument("--dca-count", type=int, default=0, help="Active smart money DCAs")
+
     args = parser.parse_args()
-    
+
     signals = SignalInput(
         smart_money_whales=args.whales,
         narrative_volume_spike=args.volume_spike,
         narrative_kol_detected=args.kol,
         narrative_age_minutes=args.narrative_age,
         rug_warden_status=args.rug_warden,
-        edge_bank_match_pct=args.edge_match
+        edge_bank_match_pct=args.edge_match,
+        exchange_outflow_usd=args.exchange_outflow,
+        fresh_wallet_inflow_usd=args.fresh_wallet_inflow,
+        smart_money_buy_volume_usd=args.sm_buy_volume,
+        dca_count=args.dca_count,
     )
     
     scorer = ConvictionScorer()

@@ -1,7 +1,7 @@
 # ChadBoar Skills
 
 ## oracle_query
-Smart Money Oracle — query whale accumulation signals from Nansen + Mobula top whales networth >$10k accum.
+Smart Money Oracle — 4-phase TGM pipeline: Token Screener discovery, Flow Intelligence validation, Jupiter DCA detection, Smart Money Holdings scan. Falls back to legacy dex-trades if screener unavailable. Enriches each candidate with flow_intel, buyer_depth, and dca_count. ~23-35 credits/cycle.
 
 ## warden_check
 Rug Warden — pre-trade token validation.

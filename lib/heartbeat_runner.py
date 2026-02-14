@@ -14,9 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
-from lib.clients.nansen import NansenClient
 from lib.clients.birdeye import BirdeyeClient
 from lib.clients.x_api import XClient
 from lib.scoring import ConvictionScorer, SignalInput
@@ -25,6 +24,7 @@ from lib.utils.async_batch import batch_price_fetch
 from lib.utils.file_lock import safe_read_json, safe_write_json
 from lib.utils.red_flags import check_concentrated_volume
 from lib.skills.warden_check import check_token
+from lib.skills.oracle_query import query_oracle
 from lib.llm_utils import call_grok
 
 
@@ -110,22 +110,28 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     finally:
         await birdeye_watchdog.close()
     
-    # Step 5: Smart Money Oracle
+    # Step 5: Smart Money Oracle (TGM pipeline)
     if time_remaining() < 10:
         result["timeout_triggered"] = True
         result["observe_only"] = True
         result["errors"].append("Timeout before oracle step")
         return result
-    
+
     oracle_failed = False
-    nansen = NansenClient()
     try:
-        oracle_data = await asyncio.wait_for(
-            nansen.get_smart_money_transactions(limit=50),
-            timeout=min(20, time_remaining())
+        oracle_result = await asyncio.wait_for(
+            query_oracle(),
+            timeout=min(45, time_remaining())
         )
-        oracle_signals = parse_oracle_signals(oracle_data)
-        result["oracle_signals"] = oracle_signals
+        if oracle_result.get("status") == "OK":
+            oracle_signals = oracle_result.get("nansen_signals", [])
+            result["oracle_signals"] = oracle_signals
+            result["holdings_delta"] = oracle_result.get("holdings_delta", [])
+        else:
+            oracle_signals = []
+            oracle_failed = True
+            result["sources_failed"].append("oracle")
+            result["errors"].append(f"Oracle error: {oracle_result.get('error', 'unknown')}")
     except asyncio.TimeoutError:
         result["errors"].append("Oracle step timeout")
         oracle_signals = []
@@ -136,8 +142,6 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         oracle_signals = []
         oracle_failed = True
         result["sources_failed"].append("oracle")
-    finally:
-        await nansen.close()
     
     # Step 6: Narrative Hunter
     narrative_failed = False
@@ -209,11 +213,24 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         oracle_sig = next((s for s in oracle_signals if s["token_mint"] == mint), None)
         narrative_sig = next((s for s in narrative_signals if s["token_mint"] == mint), None)
         
-        whales = oracle_sig["wallet_count"] if oracle_sig else 0
+        # Use buyer_depth.smart_money_buyers for more accurate whale count when available
+        if oracle_sig and oracle_sig.get("buyer_depth", {}).get("smart_money_buyers", 0) > 0:
+            whales = oracle_sig["buyer_depth"]["smart_money_buyers"]
+        else:
+            whales = oracle_sig["wallet_count"] if oracle_sig else 0
+
+        # Extract TGM flow intelligence fields
+        flow_intel = (oracle_sig or {}).get("flow_intel", {})
+        buyer_depth = (oracle_sig or {}).get("buyer_depth", {})
+        exchange_outflow_usd = float(flow_intel.get("exchange_net_usd", 0))
+        fresh_wallet_inflow_usd = float(flow_intel.get("fresh_wallet_net_usd", 0))
+        smart_money_buy_vol = float(buyer_depth.get("total_buy_volume_usd", 0))
+        dca_count = int((oracle_sig or {}).get("dca_count", 0))
+
         volume_spike = 0.0
         kol_detected = False
         age_minutes = 0
-        
+
         if narrative_sig:
             volume_str = narrative_sig.get("volume_vs_avg", "0x")
             volume_spike = float(volume_str.replace("x", ""))
@@ -253,6 +270,10 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             narrative_age_minutes=age_minutes,
             rug_warden_status=rug_status,
             edge_bank_match_pct=0.0,  # No beads yet
+            exchange_outflow_usd=exchange_outflow_usd,
+            fresh_wallet_inflow_usd=fresh_wallet_inflow_usd,
+            smart_money_buy_volume_usd=smart_money_buy_vol,
+            dca_count=dca_count,
         )
         
         score = scorer.score(
@@ -379,55 +400,6 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     result["next_cycle"] = cycle_num + 1
     
     return result
-
-
-def parse_oracle_signals(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Parse Nansen smart money transactions into signals."""
-    SOL_MINT = "So11111111111111111111111111111111111111112"
-    token_wallets: dict[str, dict[str, Any]] = {}
-    
-    transactions = data.get("data", [])
-    if not isinstance(transactions, list):
-        return []
-    
-    for tx in transactions:
-        token_sold = tx.get("token_sold_address", "")
-        token_bought = tx.get("token_bought_address", "")
-        
-        if token_sold == SOL_MINT and token_bought != SOL_MINT:
-            mint = token_bought
-            symbol = tx.get("token_bought_symbol", "UNKNOWN")
-            value_usd = tx.get("trade_value_usd", 0)
-        else:
-            continue
-        
-        wallet = tx.get("trader_address", "")
-        if not mint or not wallet:
-            continue
-        
-        if mint not in token_wallets:
-            token_wallets[mint] = {
-                "token_mint": mint,
-                "token_symbol": symbol,
-                "wallets": set(),
-                "total_value_usd": 0.0,
-            }
-        
-        token_wallets[mint]["wallets"].add(wallet)
-        token_wallets[mint]["total_value_usd"] += float(value_usd)
-    
-    signals = []
-    for info in token_wallets.values():
-        wallet_count = len(info["wallets"])
-        if wallet_count >= 3:
-            signals.append({
-                "token_mint": info["token_mint"],
-                "token_symbol": info["token_symbol"],
-                "wallet_count": wallet_count,
-                "total_buy_usd": round(info["total_value_usd"], 2),
-            })
-    
-    return signals
 
 
 async def run_position_watchdog(
