@@ -23,6 +23,13 @@ class SignalInput:
     fresh_wallet_inflow_usd: float = 0.0    # From flow_intel (red flag indicator)
     smart_money_buy_volume_usd: float = 0.0 # From buyer_depth
     dca_count: int = 0                       # Active smart money DCAs
+    # Mobula Pulse fields (Phase 0)
+    pulse_ghost_metadata: bool = False       # No socials but high volume (stealth launch)
+    pulse_organic_ratio: float = 1.0         # organic_volume / total_volume (0.0-1.0)
+    pulse_bundler_pct: float = 0.0           # Bundler holdings % (red flag > 20%)
+    pulse_sniper_pct: float = 0.0            # Sniper holdings % (red flag > 30%)
+    pulse_pro_trader_pct: float = 0.0        # Pro trader + smart trader holdings %
+    pulse_deployer_migrations: int = 0       # Deployer's prior migrations (rug risk > 3)
 
 
 @dataclass
@@ -324,6 +331,56 @@ class ConvictionScorer:
                 f"S2 DAMPING: {signals.smart_money_whales} whales but no narrative "
                 f"momentum (−{penalty} pts)"
             )
+
+        # PULSE SCORING (Phase 0 — Mobula Pulse bonding/bonded signals)
+
+        # PULSE BONUS 1: Ghost metadata (stealth launch, no socials but volume)
+        if signals.pulse_ghost_metadata:
+            bonus = 5
+            breakdown['pulse_ghost'] = bonus
+            ordering_score += bonus
+            permission_score += bonus
+            reasoning_parts.append(f"PULSE BONUS: Ghost metadata (+{bonus} pts)")
+
+        # PULSE BONUS 2: Pro traders > 10% holdings
+        if signals.pulse_pro_trader_pct > 10:
+            bonus = 5
+            breakdown['pulse_pro_trader'] = bonus
+            ordering_score += bonus
+            permission_score += bonus
+            reasoning_parts.append(f"PULSE BONUS: Pro traders {signals.pulse_pro_trader_pct:.1f}% (+{bonus} pts)")
+
+        # PULSE RED FLAG 1: Low organic volume ratio (< 0.3 = bot/fake volume)
+        if signals.pulse_organic_ratio < 0.3 and signals.pulse_organic_ratio > 0:
+            penalty = 10
+            red_flags['pulse_low_organic'] = -penalty
+            permission_score -= penalty
+            reasoning_parts.append(f"PULSE RED FLAG: Organic ratio {signals.pulse_organic_ratio:.2f} (−{penalty} pts)")
+
+        # PULSE RED FLAG 2: High bundler holdings (> 20%)
+        if signals.pulse_bundler_pct > 20:
+            penalty = 10
+            red_flags['pulse_bundler'] = -penalty
+            permission_score -= penalty
+            reasoning_parts.append(f"PULSE RED FLAG: Bundlers {signals.pulse_bundler_pct:.1f}% (−{penalty} pts)")
+
+        # PULSE RED FLAG 3: High sniper holdings (> 30%)
+        if signals.pulse_sniper_pct > 30:
+            penalty = 10
+            red_flags['pulse_sniper'] = -penalty
+            permission_score -= penalty
+            reasoning_parts.append(f"PULSE RED FLAG: Snipers {signals.pulse_sniper_pct:.1f}% (−{penalty} pts)")
+
+        # PULSE RED FLAG 4: Serial deployer (> 3 migrations = rug risk)
+        if signals.pulse_deployer_migrations > 3:
+            penalty = 10
+            red_flags['pulse_serial_deployer'] = -penalty
+            permission_score -= penalty
+            reasoning_parts.append(f"PULSE RED FLAG: Deployer {signals.pulse_deployer_migrations} migrations (−{penalty} pts)")
+
+        # PRIMARY SOURCE: Pulse (bonded + pro_trader > 10%)
+        if signals.pulse_pro_trader_pct > 10 and signals.pulse_organic_ratio >= 0.3:
+            primary_sources.append("pulse")
 
         # Apply data completeness penalty (Phase 2)
         permission_score = int(permission_score * data_completeness)

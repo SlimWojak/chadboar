@@ -71,6 +71,24 @@ class MobulaClient:
             'signal_strength': 'high' if accum > 50000 else 'medium' if accum > 10000 else 'low'
         }
 
+    def get_pulse_listings(self, pulse_url: str, endpoint: str = "/api/2/pulse") -> dict[str, Any]:
+        """Fetch Pulse v2 bonding/bonded token listings from Mobula.
+
+        Returns dict with 'bonding', 'bonded', 'new' token arrays.
+        Each token has: name, symbol, address, liquidity, volume,
+        holder categorization (bundlers/snipers/pro traders), organic volume ratio.
+        """
+        url = f"{pulse_url}{endpoint}"
+        params = {
+            'chainId': 'solana:solana',
+            'assetMode': 'false',
+            'model': 'default',
+        }
+        resp = requests.get(url, headers=self.headers, params=params, timeout=15)
+        if resp.status_code != 200:
+            return {}
+        return resp.json()
+
     def get_whale_portfolio(self, wallet: str) -> list[dict[str, Any]]:
         """Get wallet's Solana token holdings from Mobula portfolio API."""
         url = f"{self.base_url}/wallet/portfolio"
@@ -111,6 +129,7 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
         nansen_signals = []
         holdings_delta: list[dict[str, Any]] = []
         mobula_signals: list[dict[str, Any]] = []
+        pulse_signals: list[dict[str, Any]] = []
 
         if token_mint:
             # Single-token mode: use existing netflow + enrich with TGM
@@ -145,6 +164,9 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
 
             mobula_client = None
             whales: list[str] = []
+            pulse_task_idx: int | None = None
+            mobula_task_idx: int | None = None
+
             if 'mobula' in firehose:
                 mobula_config = firehose['mobula']
                 mobula_client = MobulaClient(mobula_config)
@@ -155,11 +177,21 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
                     "GitYucwpNcg6Dx1Y15UQ9TQn8LZMX1uuqQNn8rXxEWNC",
                     "9QgXqrgdbVU8KcpfskqJpAXKzbaYQJecgMAruSWoXDkM"
                 ]
+                mobula_task_idx = len(tasks_to_run)
                 tasks_to_run.append(_run_mobula_scan(mobula_client, whales))
+
+                # Pulse scan (Phase 0) — runs in parallel with TGM + Mobula
+                pulse_url = mobula_config.get('pulse_url', '')
+                pulse_endpoint = mobula_config.get('endpoints', {}).get('pulse', '/api/2/pulse')
+                if pulse_url:
+                    pulse_task_idx = len(tasks_to_run)
+                    tasks_to_run.append(
+                        _run_pulse_scan(mobula_client, pulse_url, pulse_endpoint)
+                    )
 
             results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
 
-            # Unpack TGM result
+            # Unpack TGM result (always index 0)
             tgm_result = results[0]
             if isinstance(tgm_result, tuple):
                 nansen_signals, holdings_delta, tgm_timing = tgm_result
@@ -168,23 +200,33 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
                 _log(f"TGM pipeline FAILED: {tgm_result}")
 
             # Unpack Mobula result
-            if len(results) > 1:
-                mobula_result = results[1]
+            if mobula_task_idx is not None and mobula_task_idx < len(results):
+                mobula_result = results[mobula_task_idx]
                 if isinstance(mobula_result, tuple):
                     mobula_signals, mobula_timing = mobula_result
                     phase_timing.update(mobula_timing)
                 elif isinstance(mobula_result, Exception):
                     _log(f"Mobula scan FAILED: {mobula_result}")
 
-        all_signals = nansen_signals + mobula_signals
+            # Unpack Pulse result (Phase 0)
+            if pulse_task_idx is not None and pulse_task_idx < len(results):
+                pulse_result = results[pulse_task_idx]
+                if isinstance(pulse_result, tuple):
+                    pulse_signals, pulse_timing = pulse_result
+                    phase_timing.update(pulse_timing)
+                elif isinstance(pulse_result, Exception):
+                    _log(f"Pulse scan FAILED: {pulse_result}")
+
+        all_signals = nansen_signals + mobula_signals + pulse_signals
         phase_timing["total"] = round(time.monotonic() - t_total, 1)
-        _log(f"Oracle done: {len(all_signals)} signals in {phase_timing['total']}s")
+        _log(f"Oracle done: {len(all_signals)} signals ({len(pulse_signals)} pulse) in {phase_timing['total']}s")
 
         return {
             "status": "OK",
             "nansen_signals": nansen_signals,
             "holdings_delta": holdings_delta,
             "mobula_signals": mobula_signals,
+            "pulse_signals": pulse_signals,
             "total_signals": len(all_signals),
             "phase_timing": phase_timing,
             "diagnostics": list(_diagnostics),
@@ -197,6 +239,7 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
             "nansen_signals": [],
             "holdings_delta": [],
             "mobula_signals": [],
+            "pulse_signals": [],
             "total_signals": 0,
             "phase_timing": phase_timing,
             "diagnostics": list(_diagnostics),
@@ -360,6 +403,143 @@ async def _run_mobula_scan(
         _log(f"Mobula portfolio done ({time.monotonic()-t1:.1f}s)")
 
     return mobula_signals, phase_timing
+
+
+async def _run_pulse_scan(
+    mobula_client: MobulaClient,
+    pulse_url: str,
+    pulse_endpoint: str = "/api/2/pulse",
+) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    """Fetch Mobula Pulse bonding/bonded tokens and filter candidates.
+
+    Returns:
+        (pulse_signals, phase_timing)
+    """
+    phase_timing: dict[str, float] = {}
+    t0 = time.monotonic()
+    _log("Pulse: fetching bonding/bonded listings...")
+
+    try:
+        raw = await asyncio.to_thread(
+            mobula_client.get_pulse_listings, pulse_url, pulse_endpoint
+        )
+    except Exception as e:
+        _log(f"Pulse fetch FAILED: {e}")
+        return [], {"pulse_fetch": round(time.monotonic() - t0, 1)}
+
+    pulse_signals = _parse_pulse_candidates(raw)
+    phase_timing["pulse_fetch"] = round(time.monotonic() - t0, 1)
+    _log(f"Pulse done: {len(pulse_signals)} candidates ({phase_timing['pulse_fetch']:.1f}s)")
+    return pulse_signals, phase_timing
+
+
+def _parse_pulse_candidates(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """Parse Pulse v2 response into scored candidate signals.
+
+    Filters:
+    - bonded tokens only (graduated from bonding curve)
+    - liquidity > $5k
+    - volume > $1k
+    - organic volume ratio > 0.3
+    - bundler holdings < 20%
+    - sniper holdings < 30%
+    """
+    candidates: list[dict[str, Any]] = []
+    data = raw.get("data", raw)
+    if not isinstance(data, dict):
+        return []
+
+    # Process bonded tokens (highest value — just migrated to Raydium)
+    bonded = data.get("bonded", [])
+    if not isinstance(bonded, list):
+        bonded = []
+
+    for token in bonded:
+        candidate = _extract_pulse_token(token, stage="bonded")
+        if candidate:
+            candidates.append(candidate)
+
+    # Also check bonding tokens (still on curve, but interesting)
+    bonding = data.get("bonding", [])
+    if not isinstance(bonding, list):
+        bonding = []
+
+    for token in bonding:
+        candidate = _extract_pulse_token(token, stage="bonding")
+        if candidate:
+            candidates.append(candidate)
+
+    # Sort by organic volume ratio × pro_trader_pct (quality signal)
+    candidates.sort(
+        key=lambda c: c.get("pulse_organic_ratio", 0) * c.get("pulse_pro_trader_pct", 0),
+        reverse=True,
+    )
+    return candidates[:10]
+
+
+def _extract_pulse_token(token: dict[str, Any], stage: str) -> dict[str, Any] | None:
+    """Extract and filter a single Pulse token entry."""
+    mint = token.get("address", token.get("token_address", ""))
+    if not mint:
+        return None
+
+    symbol = token.get("symbol", token.get("name", "UNKNOWN"))
+    liquidity = float(token.get("liquidity", 0))
+    volume = float(token.get("volume", token.get("volume_24h", 0)))
+
+    # Hard filters
+    if liquidity < 5000:
+        return None
+    if volume < 1000:
+        return None
+
+    # Holder categorization
+    bundler_pct = float(token.get("bundlersHoldingsPercentage", 0))
+    sniper_pct = float(token.get("snipersHoldingsPercentage", 0))
+    pro_trader_pct = float(token.get("proTradersHoldingsPercentage", 0))
+    smart_trader_pct = float(token.get("smartTradersHoldingsPercentage", 0))
+
+    # Organic volume ratio
+    total_vol = float(token.get("volume", token.get("volume_24h", 1)))
+    organic_vol = float(token.get("organicVolume", total_vol))
+    organic_ratio = round(organic_vol / total_vol, 3) if total_vol > 0 else 0.0
+
+    # Red flag filters (hard reject)
+    if bundler_pct > 20:
+        return None
+    if sniper_pct > 30:
+        return None
+    if organic_ratio < 0.3:
+        return None
+
+    # Ghost metadata detection (no socials but volume exists)
+    has_socials = bool(token.get("twitter") or token.get("website") or token.get("telegram"))
+    ghost_metadata = not has_socials and volume > 5000
+
+    # Deployer migration count
+    deployer_migrations = int(token.get("deployerMigrations", token.get("deployer_migrations", 0)))
+
+    return {
+        "token_mint": mint,
+        "token_symbol": symbol,
+        "source": "pulse",
+        "discovery_source": f"pulse-{stage}",
+        "pulse_stage": stage,
+        "liquidity_usd": round(liquidity, 2),
+        "volume_usd": round(volume, 2),
+        "pulse_organic_ratio": organic_ratio,
+        "pulse_bundler_pct": round(bundler_pct, 2),
+        "pulse_sniper_pct": round(sniper_pct, 2),
+        "pulse_pro_trader_pct": round(pro_trader_pct + smart_trader_pct, 2),
+        "pulse_ghost_metadata": ghost_metadata,
+        "pulse_deployer_migrations": deployer_migrations,
+        "wallet_count": 0,
+        "total_buy_usd": round(volume, 2),
+        "confidence": "medium" if stage == "bonded" else "low",
+        "flow_intel": _empty_flow_intel(),
+        "buyer_depth": _empty_buyer_depth(),
+        "dca_count": 0,
+    }
 
 
 async def _enrich_signals(

@@ -179,6 +179,31 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         "discovery_source": "mobula-whale",
                     })
                     existing_mints.add(ms["token_mint"])
+
+            # Extract Pulse candidates (Phase 0) into scoring loop
+            pulse_signals = oracle_result.get("pulse_signals", [])
+            for ps in pulse_signals:
+                if ps.get("token_mint") and ps["token_mint"] not in existing_mints:
+                    oracle_signals.append({
+                        "token_mint": ps["token_mint"],
+                        "token_symbol": ps.get("token_symbol", "UNKNOWN"),
+                        "wallet_count": 0,
+                        "total_buy_usd": ps.get("volume_usd", 0),
+                        "confidence": ps.get("confidence", "low"),
+                        "source": "pulse",
+                        "flow_intel": _empty_flow_intel(),
+                        "buyer_depth": _empty_buyer_depth(),
+                        "dca_count": 0,
+                        "discovery_source": ps.get("discovery_source", "pulse-bonded"),
+                        # Preserve pulse-specific fields for scoring
+                        "pulse_ghost_metadata": ps.get("pulse_ghost_metadata", False),
+                        "pulse_organic_ratio": ps.get("pulse_organic_ratio", 1.0),
+                        "pulse_bundler_pct": ps.get("pulse_bundler_pct", 0.0),
+                        "pulse_sniper_pct": ps.get("pulse_sniper_pct", 0.0),
+                        "pulse_pro_trader_pct": ps.get("pulse_pro_trader_pct", 0.0),
+                        "pulse_deployer_migrations": ps.get("pulse_deployer_migrations", 0),
+                    })
+                    existing_mints.add(ps["token_mint"])
         else:
             oracle_signals = []
             oracle_failed = True
@@ -314,6 +339,14 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             age_minutes < 5  # Narrative is brand new
         )
         
+        # Extract pulse-specific fields if this signal came from Pulse
+        pulse_ghost = (oracle_sig or {}).get("pulse_ghost_metadata", False)
+        pulse_organic = float((oracle_sig or {}).get("pulse_organic_ratio", 1.0))
+        pulse_bundler = float((oracle_sig or {}).get("pulse_bundler_pct", 0.0))
+        pulse_sniper = float((oracle_sig or {}).get("pulse_sniper_pct", 0.0))
+        pulse_pro = float((oracle_sig or {}).get("pulse_pro_trader_pct", 0.0))
+        pulse_deployer = int((oracle_sig or {}).get("pulse_deployer_migrations", 0))
+
         # Score
         signal_input = SignalInput(
             smart_money_whales=whales,
@@ -326,6 +359,12 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             fresh_wallet_inflow_usd=fresh_wallet_inflow_usd,
             smart_money_buy_volume_usd=smart_money_buy_vol,
             dca_count=dca_count,
+            pulse_ghost_metadata=pulse_ghost,
+            pulse_organic_ratio=pulse_organic,
+            pulse_bundler_pct=pulse_bundler,
+            pulse_sniper_pct=pulse_sniper,
+            pulse_pro_trader_pct=pulse_pro,
+            pulse_deployer_migrations=pulse_deployer,
         )
         
         score = scorer.score(

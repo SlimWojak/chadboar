@@ -58,9 +58,11 @@ jito:
 
 mobula:
   base_url: "https://api.mobula.io/api/1"
+  pulse_url: "https://pulse-v2-api.mobula.io"
   api_key: "a6249ed0-148b-46d3-9c85-e42ac553adb2"
   rate_limit_per_second: 10
   endpoints:
     wallet_history: "/wallet/history"
     wallet_portfolio: "/wallet/portfolio"
     latest_pairs: "/market/blockchain/pairs?blockchain=solana&sortBy=createdAt"
+    pulse: "/api/2/pulse"
