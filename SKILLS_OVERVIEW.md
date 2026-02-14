@@ -8,40 +8,188 @@
 ## Core Trading Skills (5)
 
 ### 1. Smart Money Oracle
-**Purpose:** Detect whale accumulation and smart money flows on Solana tokens using Nansen Token God Mode (TGM) suite
+**Purpose:** Detect whale accumulation and smart money flows on Solana tokens using Nansen TGM suite, Mobula whale tracking, and Mobula Pulse pre-discovery
 **When to Use:** Heartbeat step 5, or on-demand for specific token analysis
-**Data Source:** Nansen API (Token Screener, Flow Intelligence, Who Bought/Sold, Jupiter DCAs, Smart Money Holdings)
-**Output:** Enriched token signals with flow_intel, buyer_depth, dca_count, and holdings_delta
+**Data Sources:** Nansen API, Mobula API (wallet + Pulse), Helius API
+**Output:** Enriched token signals with flow_intel, buyer_depth, dca_count, holdings_delta, pulse candidates, and phase diagnostics
 
-**4-Phase Pipeline:**
-1. **Discovery** — Token Screener (5 credits): Filter Solana tokens by smart money inflows, volume, liquidity
-2. **Validation** — Flow Intelligence + Who Bought/Sold (1 credit each, parallel per token): Segment flow breakdown + buyer/seller depth with labels
-3. **DCA Detection** — Jupiter DCAs (1-5 credits per token): Active smart money DCA orders on Jupiter (top 3 candidates)
-4. **Holdings Scan** — Smart Money Holdings (5 credits): Portfolio-wide 24h balance changes across smart money wallets
+#### Execution Architecture
 
-**Fallback:** If Token Screener fails, falls back to legacy `get_smart_money_transactions()` (dex-trades) approach
+Three parallel pipelines run concurrently via `asyncio.gather()`:
 
-**Credit Budget per Cycle:** ~23-35 credits (~3,360-5,040/day at 10min intervals)
+```
+query_oracle()
+  ├─ _run_tgm_pipeline(nansen)       # Nansen Phases 1-4 (parallel Phase 4)
+  ├─ _run_mobula_scan(mobula, whales) # Whale networth + portfolio enrichment
+  └─ _run_pulse_scan(mobula)          # NEW: Pump.fun migration pre-discovery
+```
+
+#### Phase 0: Pulse Pre-Discovery (Mobula Pulse v2) — NEW
+
+**The Edge:** Catches tokens during the Pump.fun → Raydium migration window — the 5-10 minute price discovery phase that Nansen/Birdeye cannot see yet. This is where cabal plays launch and early alpha lives.
+
+**API Endpoint:**
+```
+GET https://pulse-v2-api.mobula.io/api/2/pulse
+  ?chainId=solana:solana
+  &assetMode=false
+  &model=default
+```
+
+**Response Structure:** Returns three arrays by state:
+- `bonding` — tokens still on Pump.fun bonding curve (pre-migration)
+- `bonded` — tokens that just migrated to Raydium (prime entry window)
+- `new` — recently created tokens (ignored — too early, too risky)
+
+**Candidate Qualification Filters (applied in Python):**
+
+| Filter | Threshold | Why |
+|---|---|---|
+| `liquidity` | > $5,000 | Tradeable — won't get stuck |
+| `volume_1h` | > $10,000 | Real activity, not dead |
+| `security.buyTax` | == 0 | No tax tokens |
+| `security.sellTax` | == 0 | No tax tokens |
+| `security.isBlacklisted` | == false | Not blacklisted |
+| `security.honeypot` | == false | Not a honeypot |
+| `top10HoldingsPercentage` | < 80% | Not fully insider-held |
+| `bundlersHoldingsPercentage` | < 50% | Not a pure bundle play |
+
+**Extracted Signal Fields (per Pulse candidate):**
+```python
+{
+    "token_mint": address,
+    "token_symbol": symbol,
+    "bonding_state": "bonding" | "bonded",
+    "liquidity_usd": liquidity,
+    "volume_1h_usd": volume_1h,
+    "organic_ratio": organic_volume_1h / volume_1h,  # Bot-excluded ratio
+    "holders_count": holdersCount,
+    "top10_pct": top10HoldingsPercentage,
+    "bundler_pct": bundlersHoldingsPercentage,
+    "sniper_pct": snipersHoldingsPercentage,
+    "pro_trader_pct": proTradersHoldingsPercentage,
+    "smart_trader_pct": smartTradersHoldingsPercentage,
+    "ghost_metadata": bool,           # No socials + volume > $50k
+    "deployer_migrations": int,       # Serial deployer count
+    "minutes_since_created": float,
+    "security": {                     # Pulse-native security data
+        "mint_disabled": bool,
+        "freeze_disabled": bool,
+        "lp_locked": bool,
+    },
+    "source": "pulse",
+    "discovery_source": "pulse-bonded" | "pulse-bonding",
+}
+```
+
+**Ghost Metadata Detection:**
+Cabals often launch tokens without social links (no Twitter, no Telegram, no website) to keep retail out during accumulation. Once links are added to DexScreener/Mobula, the "public" pump begins.
+- Signal: `socials` is empty/null AND `volume_1h > $50,000`
+- `ghost_metadata: true` → stealth launch indicator → **+5 conviction bonus**
+
+**Pulse-Specific Scoring Signals (new fields in `SignalInput`):**
+
+| Field | Type | Scoring Effect |
+|---|---|---|
+| `pulse_ghost_metadata` | bool | +5 pts bonus (stealth cabal accumulation window) |
+| `pulse_organic_ratio` | float | < 0.3 → **−10 pts** red flag (fake/bot volume) |
+| `pulse_bundler_pct` | float | > 20% → **−10 pts** red flag (bundled launch manipulation) |
+| `pulse_sniper_pct` | float | > 30% → **−10 pts** red flag (sniper-dominated, likely dump) |
+| `pulse_pro_trader_pct` | float | > 10% → +5 pts bonus (smart money entered at launch) |
+| `pulse_deployer_migrations` | int | > 3 → **−10 pts** red flag (serial rug deployer) |
+
+**Limit:** Top 5 candidates per cycle (sorted by `volume_1h` descending).
+
+**Credits:** 1 Mobula credit per Pulse GET call (1/cycle).
+
+#### Phase 1: Discovery — Nansen Token Screener
+
+**Fallback Chain:** 1h screener → 24h screener → dex-trades
+- If 1h returns 0 candidates, retry with `timeframe="24h"` (`discovery_source: "screener-24h"`)
+- If 24h also empty, fall back to dex-trades (`discovery_source: "dex-trades"`)
+
+**Credits:** 5 Nansen credits per screener call.
+
+#### Phase 2: Validation — Flow Intelligence + Who Bought/Sold
+Parallel enrichment per candidate. Segment flow breakdown + buyer/seller depth.
+**Credits:** 1 Nansen credit each (2 per token, parallel).
+
+#### Phase 3: DCA Detection — Jupiter DCAs
+Active smart money DCA orders on Jupiter (top 3 candidates).
+**Credits:** 1-5 Nansen credits per token.
+
+#### Phase 4: Holdings Scan — Smart Money Holdings
+Starts as `asyncio.create_task()` BEFORE Phase 1 (doesn't depend on candidates). Runs in parallel with Phases 1-3.
+**Credits:** 5 Nansen credits.
+
+#### Mobula Whale Scan (parallel with TGM)
+- 5 tracked whale wallets queried via `asyncio.to_thread()` + `asyncio.gather()` (parallel, not sequential)
+- Accumulating whales (accum_24h > $10k) enriched with `/wallet/portfolio` for token resolution
+- Whale tokens enter scoring loop as `discovery_source: "mobula-whale"`
 
 **Enriched Output Fields (per token):**
 - `flow_intel`: `{smart_trader_net_usd, whale_net_usd, exchange_net_usd, fresh_wallet_net_usd, top_pnl_net_usd}`
 - `buyer_depth`: `{smart_money_buyers, total_buy_volume_usd, smart_money_sellers, total_sell_volume_usd}`
 - `dca_count`: Active smart money DCA orders
-- `discovery_source`: `"screener"` or `"dex-trades"` (fallback)
+- `discovery_source`: `"screener"` | `"screener-24h"` | `"dex-trades"` | `"mobula-whale"` | `"pulse-bonded"` | `"pulse-bonding"`
 - `holdings_delta`: Portfolio-wide smart money balance shifts (top-level array)
+- `phase_timing`: Per-phase execution times (dict)
+- `diagnostics`: Timestamped log lines from `_log()` (list)
 
 **Red Flags (fed to scoring):**
-- `fresh_wallet_net_usd > $50,000` → -10 pts (fresh wallet concentration)
-- `exchange_net_usd > 0` (inflow to exchanges = distribution) → -10 pts
+- `fresh_wallet_net_usd > $50,000` → −10 pts (fresh wallet concentration)
+- `exchange_net_usd > 0` (inflow to exchanges = distribution) → −10 pts
+- `pulse_organic_ratio < 0.3` → −10 pts (fake volume)
+- `pulse_bundler_pct > 20%` → −10 pts (bundled launch)
+- `pulse_sniper_pct > 30%` → −10 pts (sniper-dominated)
+- `pulse_deployer_migrations > 3` → −10 pts (serial rug deployer)
 
 **Thresholds:**
 - ≥3 whales accumulating → PRIMARY signal (permission gate eligible)
 - `buyer_depth.smart_money_buyers` used for more accurate whale count
 
+#### Triple-Lock Strategy (Pulse + Helius + Nansen convergence)
+
+The highest-conviction play is when all three data sources converge on the same token:
+
+| Source | Signal | Role |
+|---|---|---|
+| **Mobula Pulse** | Token just hit `bonded` state | **Speed** — first to see migration |
+| **Helius/Rug Warden** | No honeypot, mint disabled, LP locked, clean launch | **Safety** — validates security |
+| **Nansen** | Smart Money wallets entering within first 5 min | **Conviction** — whale confirmation |
+
+When a Pulse candidate passes Rug Warden AND Nansen shows SM inflow, the scoring pipeline naturally produces high conviction (triple PRIMARY source convergence). No special override needed — the architecture handles it.
+
+#### Credit Budget (Mobula — Startup Plan: 125,000/month)
+
+| Endpoint | Credits/call | Calls/cycle | Daily (~250 cycles) | Monthly |
+|---|---|---|---|---|
+| Pulse GET | 1 | 1 | 250 | 7,500 |
+| wallet/history | 1 | 5 | 1,250 | 37,500 |
+| wallet/portfolio | 1 | ~2 avg | ~500 | ~15,000 |
+| **Total Mobula** | | | **~2,000** | **~60,000** |
+
+**Headroom:** 125,000 − 60,000 = **65,000 credits/month (52% buffer).**
+
+Nansen credits are separate (their own API key/plan).
+
+#### Implementation Plan
+
+| # | File | Change |
+|---|---|---|
+| 1 | `config/firehose.yaml` | Add `pulse_url: "https://pulse-v2-api.mobula.io"` and `pulse: "/api/2/pulse"` endpoint |
+| 2 | `lib/skills/oracle_query.py` | Add `get_pulse_listings()` to `MobulaClient` — GET Pulse, filter, extract candidates |
+| 3 | `lib/skills/oracle_query.py` | Add `_run_pulse_scan()` async function — parallel with TGM + Mobula whale |
+| 4 | `lib/skills/oracle_query.py` | Launch `_run_pulse_scan()` as third task in `query_oracle()` `asyncio.gather()` |
+| 5 | `lib/scoring.py` | Add 6 new fields to `SignalInput`: `pulse_ghost_metadata`, `pulse_organic_ratio`, `pulse_bundler_pct`, `pulse_sniper_pct`, `pulse_pro_trader_pct`, `pulse_deployer_migrations` |
+| 6 | `lib/scoring.py` | Add pulse scoring logic: bonuses (+5 ghost, +5 pro traders) and red flags (−10 each for organic, bundler, sniper, deployer) |
+| 7 | `lib/heartbeat_runner.py` | Extract pulse candidates from oracle result, map pulse fields to `SignalInput`, feed into scoring loop |
+| 8 | `tests/test_pulse_integration.py` | Test Pulse candidate filtering, ghost metadata detection, scoring bonuses/penalties, parallel execution |
+
 **Command:**
 ```bash
 python3 -m lib.skills.oracle_query
-python3 -m lib.skills.oracle_query --token <MINT>  # specific token
+python3 -m lib.skills.oracle_query --token <MINT>  # specific token (skips Pulse)
 ```
 
 ---
@@ -292,6 +440,7 @@ cd /home/autistboar/chadboar && .venv/bin/python3 -m <module>
 - **Helius API:** Rug Warden (token metadata), Blind Executioner (RPC)
 - **Birdeye API:** Narrative Hunter (volume data), Rug Warden (security checks)
 - **Nansen API:** Smart Money Oracle (Token Screener, Flow Intelligence, Who Bought/Sold, Jupiter DCAs, Smart Money Holdings, dex-trades fallback)
+- **Mobula API:** Smart Money Oracle — whale networth tracking (`/wallet/history`), whale token resolution (`/wallet/portfolio`), Pulse pre-discovery (`/api/2/pulse` via `pulse-v2-api.mobula.io`). Startup plan: 125k credits/month.
 - **X API:** Narrative Hunter (social sentiment)
 - **Jito Block Engine:** Blind Executioner (MEV protection)
 
@@ -302,15 +451,16 @@ Heartbeat runner parses JSON to make decisions.
 
 ---
 
-## Triangulation Logic (v0.2)
+## Triangulation Logic (v0.4 — Pulse-aware)
 
-**Permission Gate (A1):**  
+**Permission Gate (A1):**
 - Require ≥2 PRIMARY sources for AUTO_EXECUTE
-- PRIMARY sources: Oracle (≥3 whales), Narrative (≥5x volume)
+- PRIMARY sources: Oracle (≥3 whales), Narrative (≥5x volume), Pulse (bonded + pro_trader_pct > 10%)
 
-**Partial Data Penalty (A2):**  
+**Partial Data Penalty (A2):**
 - Missing Oracle: 0.7x multiplier
 - Missing Narrative: 0.8x multiplier
+- Missing Pulse: no penalty (additive source, not required)
 - ≥2 sources failed: OBSERVE-ONLY mode
 
 **Red Flags (B1):**
@@ -319,6 +469,14 @@ Heartbeat runner parses JSON to make decisions.
 - Dumper wallets (≥3): VETO
 - Fresh wallet inflow >$50k (TGM): −10 pts
 - Exchange inflow / distribution pattern (TGM): −10 pts
+- Fake volume / low organic ratio < 0.3 (Pulse): −10 pts
+- Bundler concentration > 20% (Pulse): −10 pts
+- Sniper concentration > 30% (Pulse): −10 pts
+- Serial deployer > 3 migrations (Pulse): −10 pts
+
+**Bonuses (Pulse-specific):**
+- Ghost metadata (no socials + volume > $50k): +5 pts
+- Pro trader holdings > 10% at launch: +5 pts
 
 **Vetoes (5 total):**
 1. Rug Warden FAIL
@@ -352,23 +510,21 @@ Heartbeat runner parses JSON to make decisions.
 
 ## Dry-Run Mode
 
-**Current Status:** Active (cycles 5/10 complete)
+**Current Status:** Disabled (live trading active)
 
-**Behavior:**
+**Behavior (when enabled):**
 - All skills run normally
 - Conviction scoring active
 - Blind Executioner skipped (no real trades)
 - Recommendations logged but not executed
 - State tracking active (dry_run_cycles_completed)
 
-**Purpose:**
-- Validate triangulation tuning v0.2 logic
-- Test permission gate + red flags under real market conditions
-- Build initial bead corpus for pattern learning
-
 ---
 
 ## Future Enhancements
+
+**In Progress:**
+1. **Mobula Pulse Integration** — Phase 0 pre-discovery for Pump.fun → Raydium migrations. Design complete (see Oracle section above). Implementation next.
 
 **Planned:**
 1. **Liquidity Drop Veto** (5th veto) — if liquidity drops >50% during scoring
@@ -379,4 +535,6 @@ Heartbeat runner parses JSON to make decisions.
 **Under Consideration:**
 - Dynamic position sizing based on edge bank match %
 - Partial exit automation (tier 1/2 take-profit)
+- Cabal rotation detection (Mobula wallet graph: where did top holders get their SOL? If from a previous 100x winner → same cabal). Requires Growth plan for credit budget.
+- Mobula Pulse WebSocket feed (Growth plan, $400/month) — real-time streaming instead of polling. Would reduce latency from 5min to <1s.
 - Cross-chain bridge monitoring (Wormhole, Portal)

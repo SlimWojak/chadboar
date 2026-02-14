@@ -1,7 +1,7 @@
 # ChadBoar Skills
 
 ## oracle_query
-Smart Money Oracle — 4-phase TGM pipeline: Token Screener discovery, Flow Intelligence validation, Jupiter DCA detection, Smart Money Holdings scan. Falls back to legacy dex-trades if screener unavailable. Enriches each candidate with flow_intel, buyer_depth, and dca_count. ~23-35 credits/cycle.
+Smart Money Oracle — 5-phase pipeline: **Phase 0** Mobula Pulse pre-discovery (bonding/bonded tokens from Pump.fun → Raydium migrations), **Phase 1** Nansen Token Screener (1h/24h fallback), **Phase 2** Flow Intelligence + Who Bought/Sold validation, **Phase 3** Jupiter DCA detection, **Phase 4** Smart Money Holdings scan. Phases run in parallel where possible. Mobula whale networth + portfolio enrichment runs concurrently with TGM pipeline. Pulse candidates include holder categorization (bundlers, snipers, pro traders), organic volume ratios, and ghost metadata detection. ~25-40 Nansen credits/cycle + ~8-11 Mobula credits/cycle.
 
 ## warden_check
 Rug Warden — pre-trade token validation.
@@ -21,4 +21,4 @@ Edge Bank — query similar historical patterns.
 ## self_repair
 Self-Repair — gateway diagnostics via Grok, whitelist commands, human-gate restarts.
 
-See TOOLS.md for CLI usage.
+See TOOLS.md for CLI usage. See SKILLS_OVERVIEW.md for detailed architecture.
