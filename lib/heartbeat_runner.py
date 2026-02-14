@@ -27,6 +27,37 @@ from lib.skills.warden_check import check_token
 from lib.skills.oracle_query import query_oracle
 from lib.llm_utils import call_grok
 
+import httpx
+
+
+async def _send_s5_alert(
+    symbol: str, mint: str, conflict: str, score
+) -> None:
+    """Send S5 arbitration alert to G via Telegram."""
+    import os
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    channel_id = os.environ.get("TELEGRAM_CHANNEL_ID", "")
+    if not token or not channel_id:
+        return
+    text = (
+        f"⚖️ S5 ARBITRATION ALERT\n\n"
+        f"Token: {symbol} ({mint[:12]}...)\n"
+        f"Conflict: {conflict}\n"
+        f"Scores: ordering={score.ordering_score}, "
+        f"permission={score.permission_score}\n"
+        f"Red flags: {score.red_flags}\n\n"
+        f"Grok wanted TRADE → system downgraded to WATCHLIST.\n"
+        f"Override? Send manual trade command if you disagree."
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": channel_id, "text": text},
+            )
+    except Exception:
+        pass  # Best-effort alert
+
 
 # Grok alpha override system prompt
 GROK_ALPHA_PROMPT = """You are ChadBoar's alpha brain. DENSE YAML only.
@@ -341,10 +372,37 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     result["errors"].append(f"Grok override failed: {grok_result.get('error', 'unknown')}")
             except Exception as e:
                 result["errors"].append(f"Grok override error for {mint[:8]}: {e}")
-        
+
+        # S5 ARBITRATION: Grok upgraded to AUTO_EXECUTE, but guards/flags conflict
+        token_symbol = (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN")
+        if (score.recommendation == "AUTO_EXECUTE"
+                and grok_override
+                and ("verdict: TRADE" in grok_override or "verdict:TRADE" in grok_override)):
+            s5_conflict = None
+
+            # Conflict 1: Divergence damping fired (no narrative backing)
+            if 'divergence_damping' in score.red_flags:
+                s5_conflict = (
+                    f"S2 damping fired (no narrative) but Grok says TRADE "
+                    f"for {token_symbol}"
+                )
+
+            # Conflict 2: Permission score too low despite Grok TRADE
+            elif score.permission_score < 50:
+                s5_conflict = (
+                    f"Grok says TRADE but permission score only "
+                    f"{score.permission_score} for {token_symbol}"
+                )
+
+            if s5_conflict:
+                score.recommendation = "WATCHLIST"
+                score.reasoning += f" | S5 ARBITRATION: {s5_conflict}"
+                result["decisions"].append(f"⚖️ S5 CONFLICT: {s5_conflict}")
+                await _send_s5_alert(token_symbol, mint, s5_conflict, score)
+
         opportunity = {
             "token_mint": mint,
-            "token_symbol": (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN"),
+            "token_symbol": token_symbol,
             "ordering_score": score.ordering_score,
             "permission_score": score.permission_score,
             "breakdown": score.breakdown,

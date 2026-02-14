@@ -336,6 +336,18 @@ Heartbeat runner parses JSON to make decisions.
 - Both logged in beads for learning
 - Permission score governs final action
 
+### VSM Coordination (v0.3)
+
+**S2 Divergence Damping:**
+- If oracle detects ≥2 whales but narrative shows <2x volume and no KOL → −25 pts penalty
+- Prevents trading on whale accumulation without organic social discovery
+- Stacks with existing partial data penalties (orthogonal triggers)
+
+**S5 Arbitration Alert:**
+- When Grok alpha override says TRADE but divergence damping or low permission (<50) conflicts
+- Auto-downgrade to WATCHLIST + Telegram ⚖️ alert to G
+- G can manually override — guards win by default
+
 ---
 
 ## Dry-Run Mode

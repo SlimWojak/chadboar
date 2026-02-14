@@ -311,6 +311,20 @@ class ConvictionScorer:
             permission_score -= penalty
             reasoning_parts.append(f"RED FLAG: Exchange inflow ${signals.exchange_outflow_usd:,.0f} — distribution pattern (−{penalty} pts)")
 
+        # RED FLAG 5: S2 Divergence Damping (Oracle ↔ Narrative mismatch)
+        # Whales accumulating but zero narrative momentum → suspicious
+        # accumulation without organic discovery.
+        if (signals.smart_money_whales >= 2
+                and signals.narrative_volume_spike < 2.0
+                and not signals.narrative_kol_detected):
+            penalty = 25
+            red_flags['divergence_damping'] = -penalty
+            permission_score -= penalty
+            reasoning_parts.append(
+                f"S2 DAMPING: {signals.smart_money_whales} whales but no narrative "
+                f"momentum (−{penalty} pts)"
+            )
+
         # Apply data completeness penalty (Phase 2)
         permission_score = int(permission_score * data_completeness)
         if data_completeness < 1.0:
