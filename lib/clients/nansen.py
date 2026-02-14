@@ -119,7 +119,7 @@ class NansenClient:
         if order_by:
             body["order_by"] = order_by
         else:
-            body["order_by"] = [{"field": "smart_money_inflow", "direction": "DESC"}]
+            body["order_by"] = [{"field": "volume", "direction": "DESC"}]
         return await self._client.post(
             "/token-screener",
             json_data=body,
