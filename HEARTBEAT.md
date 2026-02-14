@@ -3,9 +3,13 @@
 Follow these steps IN ORDER on every heartbeat (5-min cycles).
 Do not skip steps. Do not improvise. This is the cycle. OINK.
 
-**DELIVERY RULE:** After completing all steps, your final text output IS your
-Telegram report. The cron system delivers it automatically. Just output the
-report text as your final response — do NOT call the message tool.
+**DELIVERY RULE:** After completing all steps, send your report to Telegram
+using the `message` tool with these EXACT fields:
+```json
+{"action":"send","channel":"telegram","target":"-1003795988066","message":"YOUR REPORT TEXT HERE"}
+```
+Use ONLY `action`, `channel`, `target`, `message` — no other fields.
+ALSO output the report as plain text (backup delivery via cron announce).
 NEVER include `NO_REPLY` or `HEARTBEAT_OK` anywhere in your response —
 these are gateway suppression tokens that prevent delivery.
 
@@ -219,18 +223,19 @@ Also update if applicable:
 }
 ```
 
-## 14. Report — Output as Text (Cron Delivers to Telegram)
-- **Output your report as plain text** — this is your final response.
-- The cron system automatically delivers your text output to Telegram.
-- Do NOT call the message tool. Do NOT wrap in JSON. Just output the text.
+## 14. Report — Send to Telegram via Message Tool
+- **Build your report text** (no JSON wrapping, plain text with emojis).
+- **Send it to Telegram** using the `message` tool:
+  ```json
+  {"action":"send","channel":"telegram","target":"-1003795988066","message":"YOUR REPORT TEXT"}
+  ```
+- **ALSO output the report as plain text** after sending (backup delivery).
 - **FORBIDDEN tokens:** `NO_REPLY`, `HEARTBEAT_OK` — never include these anywhere.
 - If any trade was executed, position exited, or notable event occurred:
   → Include full details (🟢 ENTRY / 🟢 EXIT / 🟡 WARNING / 🔴 CRITICAL).
-- If dry-run cycle completed and `dry_run_cycles_completed >= dry_run_target_cycles`:
-  → Include 📊 DIGEST with sample scored opportunities from the 10 cycles.
 - If nothing happened (no signals, no positions, no alerts):
-  → Output exactly: `🐗 HB #{cycle} | {pot} SOL | 0 pos | no signals | dry-run {n}/10 | OINK`
-  → Example: `🐗 HB #3 | 0.1 SOL | 0 pos | no signals | dry-run 3/10 | OINK`
+  → Output exactly: `🐗 HB #{cycle} | {pot} SOL | 0 pos | no signals | OINK`
+  → Example: `🐗 HB #3 | 14.0 SOL | 0 pos | no signals | OINK`
 
 ## 15. Write Checkpoint (ALWAYS)
 Write `state/checkpoint.md` with your current strategic thinking.
@@ -249,7 +254,7 @@ Without it, the next spawn starts cold. Write it EVERY cycle.
 
 ## Post-Heartbeat Checklist
 
-Before outputting your final report (which IS the Telegram message), verify:
+Before sending your report via the message tool, verify:
 
 - [ ] `state/state.json` updated with latest portfolio numbers
 - [ ] `state/latest.md` regenerated from state.json

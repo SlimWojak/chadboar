@@ -11,7 +11,7 @@ interactive assistant. Same brain, two modes.
 - Follow HEARTBEAT.md strictly — it is your trading cycle checklist.
 - Uses Grok 4.1 FAST for execution. High reasoning, degen conviction. Pure signal processing.
 - **Always run the full checklist and output your report as your final response.**
-- **Cron auto-delivers to Telegram channel -1003795988066. Do NOT call message tool.**
+- **Send your report to Telegram via the `message` tool** (see HEARTBEAT.md step 14 for exact format). Also output the report as plain text (backup delivery).
 - **NEVER include NO_REPLY or HEARTBEAT_OK** — these suppress Telegram delivery.
 - **NEVER create system cron jobs** — heartbeat runs via OpenClaw's native cron scheduler.
 
@@ -136,9 +136,8 @@ was necessary because the native heartbeat accumulates session context across
 cycles, causing DeepSeek to collapse after 1-2 successful runs.
 
 The cron job `autistboar-heartbeat` runs every 10 minutes with a fresh isolated
-session per run. The cron system uses `--announce` to deliver the agent's text
-output to Telegram channel `-1003795988066`. The agent outputs its report as
-plain text — it does NOT call the message tool.
+session per run. The agent sends its report to Telegram via the `message` tool
+(see HEARTBEAT.md step 14 for exact JSON format) and also outputs it as plain text.
 Manage with: `openclaw cron list`, `openclaw cron runs --id <id>`.
 
 **Why NOT native heartbeat:** Native heartbeat uses a persistent session (even
@@ -147,11 +146,14 @@ cycles). Models can collapse after seeing accumulated heartbeat context —
 responding with `NO_REPLY` or abbreviated output. Only `openclaw cron` with
 `--session isolated` creates a truly fresh session per run.
 
-**Delivery via `--announce`:** The cron `--announce` feature delivers the agent's
-text output to Telegram. The agent must output its report as plain text (not via
-the message tool). Using the message tool from heartbeat caused repeated failures:
-Grok formats tool args differently, causing "Action send requires a target" errors
-and empty deliveries. Plain text output + announce is the reliable path.
+**Delivery via message tool (not announce):** The cron `--announce` feature is
+unreliable — gateway logs "No reply from agent" and silently drops delivery.
+Instead, the agent explicitly calls the `message` tool with exact JSON:
+`{"action":"send","channel":"telegram","target":"-1003795988066","message":"..."}`.
+This works in isolated cron sessions (no `shouldSuppressMessagingToolReplies`
+conflict since there's no inbound Telegram context). The `message` tool must
+NOT be used in interactive mode — only in cron heartbeat sessions.
+The agent also outputs the report as plain text as a fallback.
 
 **Session collapse (still relevant for interactive sessions):** If the model in
 the main session starts giving 5-token responses, the session context has
@@ -167,9 +169,9 @@ gateway to mark output as `"silent": true` — no Telegram delivery. The
 heartbeat prompt must forbid these tokens explicitly.
 
 **Prompt discipline:** The prompt must be directive: read the file, execute
-every step, output report as text. No "do nothing" defaults. Cheap models
-will latch onto the easiest exit. Do NOT instruct the model to call the
-message tool — it causes format errors with Grok and delivery suppression.
+every step, send report via message tool, output report as text. No "do nothing"
+defaults. Cheap models will latch onto the easiest exit. The message tool JSON
+format must be exact — see HEARTBEAT.md step 14.
 
 **Config changes require gateway restart.** OpenClaw does not hot-reload
 `openclaw.json`. But `openclaw cron edit` takes effect immediately — no restart
