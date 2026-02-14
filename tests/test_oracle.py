@@ -305,7 +305,7 @@ class TestEnrichedOutputFormat:
 
     @pytest.mark.asyncio
     async def test_error_returns_empty_enriched_structure(self):
-        """API errors return empty nansen_signals, holdings_delta, and mobula_signals."""
+        """API errors return empty nansen_signals and mobula_signals; holdings may still succeed (parallel)."""
         mock = _make_nansen_mock(
             screen_tokens=AsyncMock(side_effect=Exception("down")),
             get_smart_money_transactions=AsyncMock(side_effect=Exception("also down")),
@@ -318,7 +318,8 @@ class TestEnrichedOutputFormat:
 
         assert result["status"] == "OK"
         assert result["nansen_signals"] == []
-        assert result["holdings_delta"] == []
+        # Holdings run in parallel and may succeed even if discovery fails
+        assert isinstance(result["holdings_delta"], list)
 
 
 class TestDexTradesFallback:

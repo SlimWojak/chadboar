@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import yaml
 from typing import Any, List, Dict
 
@@ -27,6 +28,17 @@ from lib.clients.helius import HeliusClient
 
 # Load environment variables (override=True: always use .env over stale inherited vars)
 load_dotenv(override=True)
+
+# Module-level diagnostics collector (reset per query_oracle call)
+_diagnostics: list[str] = []
+
+
+def _log(msg: str) -> None:
+    """Print timestamped diagnostic to stderr (visible in heartbeat logs)."""
+    ts = time.strftime("%H:%M:%S")
+    line = f"[oracle {ts}] {msg}"
+    print(line, file=sys.stderr)
+    _diagnostics.append(line)
 
 class MobulaClient:
     def __init__(self, config: Dict[str, Any]):
@@ -59,9 +71,37 @@ class MobulaClient:
             'signal_strength': 'high' if accum > 50000 else 'medium' if accum > 10000 else 'low'
         }
 
+    def get_whale_portfolio(self, wallet: str) -> list[dict[str, Any]]:
+        """Get wallet's Solana token holdings from Mobula portfolio API."""
+        url = f"{self.base_url}/wallet/portfolio"
+        params = {'wallet': wallet, 'blockchains': 'solana'}
+        resp = requests.get(url, headers=self.headers, params=params, timeout=10)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        assets = data.get('data', {}).get('assets', [])
+        tokens = []
+        for asset in assets[:5]:  # Top 5 by value
+            mint = asset.get('asset', {}).get('address', '')
+            symbol = asset.get('asset', {}).get('symbol', 'UNKNOWN')
+            value = float(asset.get('estimated_balance', 0))
+            if mint and value > 1000:  # Only meaningful holdings
+                tokens.append({
+                    'token_mint': mint,
+                    'token_symbol': symbol,
+                    'value_usd': round(value, 2),
+                })
+        return tokens
+
 
 async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
     """Query smart money signals using TGM pipeline with dex-trades fallback."""
+    global _diagnostics
+    _diagnostics = []
+    phase_timing: dict[str, float] = {}
+    t_total = time.monotonic()
+    _log("Oracle query starting...")
+
     firehose_path = os.path.join(os.path.dirname(__file__), '../../config/firehose.yaml')
     with open(firehose_path, 'r') as f:
         firehose = yaml.safe_load(f)
@@ -70,35 +110,18 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
     try:
         nansen_signals = []
         holdings_delta: list[dict[str, Any]] = []
+        mobula_signals: list[dict[str, Any]] = []
 
         if token_mint:
             # Single-token mode: use existing netflow + enrich with TGM
+            t0 = time.monotonic()
+            _log("Single-token mode...")
             data = await client.get_token_smart_money(token_mint)
             nansen_signals = _parse_token_signals(data, token_mint)
-            # Enrich single token with flow intel + who bought/sold
             nansen_signals = await _enrich_signals(client, nansen_signals)
-        else:
-            # Broad scan: TGM pipeline with dex-trades fallback
-            nansen_signals, holdings_delta = await _run_tgm_pipeline(client)
+            phase_timing["single_token"] = round(time.monotonic() - t0, 1)
 
-        mobula_signals = []
-        if 'mobula' in firehose and not token_mint:
-            mobula_config = firehose['mobula']
-            mobula_client = MobulaClient(mobula_config)
-            whales = [
-                "MJKqp326RZCHnAAbew9MDdui3iCKWco7fsK9sVuZTX2",
-                "52C9T2T7JRojtxumYnYZhyUmrN7kqzvCLc4Ksvjk7TxD",
-                "8BseXT9EtoEhBTKFFYkwTnjKSUZwhtmdKY2Jrj8j45Rt",
-                "GitYucwpNcg6Dx1Y15UQ9TQn8LZMX1uuqQNn8rXxEWNC",
-                "9QgXqrgdbVU8KcpfskqJpAXKzbaYQJecgMAruSWoXDkM"
-            ]
-            for wallet in whales:
-                data = mobula_client.get_whale_networth_accum(wallet)
-                if data and data['accum_24h_usd'] > 10000:
-                    mobula_signals.append(data)
-
-        # Helius staking % holders
-        if token_mint:
+            # Helius staking % holders
             helius = HeliusClient()
             try:
                 holders_resp = await helius.get_token_holders(token_mint, limit=100)
@@ -116,8 +139,46 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
                 mobula_signals.append(helius_signal)
             finally:
                 await helius.close()
+        else:
+            # Broad scan: run TGM and Mobula in parallel
+            tasks_to_run: list = [_run_tgm_pipeline(client)]
+
+            mobula_client = None
+            whales: list[str] = []
+            if 'mobula' in firehose:
+                mobula_config = firehose['mobula']
+                mobula_client = MobulaClient(mobula_config)
+                whales = [
+                    "MJKqp326RZCHnAAbew9MDdui3iCKWco7fsK9sVuZTX2",
+                    "52C9T2T7JRojtxumYnYZhyUmrN7kqzvCLc4Ksvjk7TxD",
+                    "8BseXT9EtoEhBTKFFYkwTnjKSUZwhtmdKY2Jrj8j45Rt",
+                    "GitYucwpNcg6Dx1Y15UQ9TQn8LZMX1uuqQNn8rXxEWNC",
+                    "9QgXqrgdbVU8KcpfskqJpAXKzbaYQJecgMAruSWoXDkM"
+                ]
+                tasks_to_run.append(_run_mobula_scan(mobula_client, whales))
+
+            results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
+
+            # Unpack TGM result
+            tgm_result = results[0]
+            if isinstance(tgm_result, tuple):
+                nansen_signals, holdings_delta, tgm_timing = tgm_result
+                phase_timing.update(tgm_timing)
+            elif isinstance(tgm_result, Exception):
+                _log(f"TGM pipeline FAILED: {tgm_result}")
+
+            # Unpack Mobula result
+            if len(results) > 1:
+                mobula_result = results[1]
+                if isinstance(mobula_result, tuple):
+                    mobula_signals, mobula_timing = mobula_result
+                    phase_timing.update(mobula_timing)
+                elif isinstance(mobula_result, Exception):
+                    _log(f"Mobula scan FAILED: {mobula_result}")
 
         all_signals = nansen_signals + mobula_signals
+        phase_timing["total"] = round(time.monotonic() - t_total, 1)
+        _log(f"Oracle done: {len(all_signals)} signals in {phase_timing['total']}s")
 
         return {
             "status": "OK",
@@ -125,8 +186,11 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
             "holdings_delta": holdings_delta,
             "mobula_signals": mobula_signals,
             "total_signals": len(all_signals),
+            "phase_timing": phase_timing,
+            "diagnostics": list(_diagnostics),
         }
     except Exception as e:
+        _log(f"Oracle FAILED: {e}")
         return {
             "status": "ERROR",
             "error": str(e),
@@ -134,46 +198,85 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
             "holdings_delta": [],
             "mobula_signals": [],
             "total_signals": 0,
+            "phase_timing": phase_timing,
+            "diagnostics": list(_diagnostics),
         }
     finally:
         await client.close()
 
 
-async def _run_tgm_pipeline(client: NansenClient) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+async def _run_tgm_pipeline(client: NansenClient) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, float]]:
     """Run full 4-phase TGM pipeline. Falls back to dex-trades if screener fails.
 
     Returns:
-        (nansen_signals, holdings_delta)
+        (nansen_signals, holdings_delta, phase_timing)
     """
+    phase_timing: dict[str, float] = {}
+
+    # --- Phase 4: Holdings Scan (start early — doesn't depend on candidates) ---
+    t4 = time.monotonic()
+    _log("Phase 4: Holdings scan (parallel start)...")
+    holdings_task = asyncio.create_task(_fetch_holdings(client))
+
     # --- Phase 1: Discovery (Token Screener, 5 credits) ---
+    t1 = time.monotonic()
     candidates: list[dict[str, Any]] = []
     discovery_source = "screener"
+
+    _log("Phase 1: Token Screener (1h)...")
     try:
         screener_data = await client.screen_tokens(
             chains=["solana"],
             timeframe="1h",
         )
         candidates = _parse_screener_candidates(screener_data)
-    except Exception:
-        # Fallback to legacy dex-trades scan
-        discovery_source = "dex-trades"
+        _log(f"Phase 1 done: {len(candidates)} candidates ({time.monotonic()-t1:.1f}s)")
+    except Exception as e:
+        _log(f"Phase 1 FAILED: {e} ({time.monotonic()-t1:.1f}s)")
 
     if not candidates:
-        # Screener returned nothing or failed — use dex-trades fallback
+        # 24h fallback before dex-trades
+        _log("Screener 1h empty, trying 24h...")
+        try:
+            screener_data = await client.screen_tokens(
+                chains=["solana"],
+                timeframe="24h",
+            )
+            candidates = _parse_screener_candidates(screener_data)
+            discovery_source = "screener-24h"
+            _log(f"Screener 24h: {len(candidates)} candidates")
+        except Exception as e:
+            _log(f"Screener 24h failed: {e}")
+
+    if not candidates:
+        # Final fallback: dex-trades
+        _log("Screener empty, falling back to dex-trades...")
         try:
             dex_data = await client.get_smart_money_transactions(limit=50)
             candidates = _parse_dex_trades_candidates(dex_data)
             discovery_source = "dex-trades"
-        except Exception:
-            return [], []
+            _log(f"Dex-trades: {len(candidates)} candidates")
+        except Exception as e:
+            _log(f"Dex-trades FAILED: {e}")
+            holdings_delta = await holdings_task
+            phase_timing["phase1_discovery"] = round(time.monotonic() - t1, 1)
+            return [], holdings_delta, phase_timing
+
+    phase_timing["phase1_discovery"] = round(time.monotonic() - t1, 1)
 
     # Limit to top 5 candidates for enrichment
     candidates = candidates[:5]
 
     # --- Phase 2: Validation (Flow Intel + Who Bought/Sold, parallel, 1 credit each) ---
+    t2 = time.monotonic()
+    _log(f"Phase 2: Enriching {len(candidates)} candidates...")
     candidates = await _enrich_signals(client, candidates)
+    phase_timing["phase2_enrichment"] = round(time.monotonic() - t2, 1)
+    _log(f"Phase 2 done ({time.monotonic()-t2:.1f}s)")
 
     # --- Phase 3: DCA Detection (top 3 candidates) ---
+    t3 = time.monotonic()
+    _log("Phase 3: DCA detection...")
     dca_tasks = []
     for sig in candidates[:3]:
         mint = sig.get("token_mint", "")
@@ -184,20 +287,79 @@ async def _run_tgm_pipeline(client: NansenClient) -> tuple[list[dict[str, Any]],
         for i, dca_result in enumerate(dca_results):
             if i < len(candidates) and isinstance(dca_result, int):
                 candidates[i]["dca_count"] = dca_result
+    phase_timing["phase3_dca"] = round(time.monotonic() - t3, 1)
+    _log(f"Phase 3 done ({time.monotonic()-t3:.1f}s)")
 
     # Tag discovery source
     for sig in candidates:
         sig["discovery_source"] = discovery_source
 
-    # --- Phase 4: Holdings Scan (5 credits) ---
-    holdings_delta: list[dict[str, Any]] = []
+    # --- Collect Phase 4 result ---
+    holdings_delta = await holdings_task
+    phase_timing["phase4_holdings"] = round(time.monotonic() - t4, 1)
+    _log(f"Phase 4 done ({time.monotonic()-t4:.1f}s)")
+
+    return candidates, holdings_delta, phase_timing
+
+
+async def _fetch_holdings(client: NansenClient) -> list[dict[str, Any]]:
+    """Fetch smart money holdings (Phase 4 helper for parallel execution)."""
     try:
         holdings_data = await client.get_smart_money_holdings(chains=["solana"])
-        holdings_delta = _parse_holdings_delta(holdings_data)
-    except Exception:
-        pass
+        return _parse_holdings_delta(holdings_data)
+    except Exception as e:
+        _log(f"Holdings fetch failed: {e}")
+        return []
 
-    return candidates, holdings_delta
+
+async def _run_mobula_scan(
+    mobula_client: MobulaClient,
+    whales: list[str],
+) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    """Query Mobula whale wallets in parallel, enrich with portfolio data.
+
+    Returns:
+        (mobula_signals, phase_timing)
+    """
+    phase_timing: dict[str, float] = {}
+    t0 = time.monotonic()
+    _log(f"Mobula: scanning {len(whales)} whales (parallel)...")
+
+    # Query all whales in parallel via asyncio.to_thread
+    async def _query_one(wallet: str) -> dict[str, Any] | None:
+        return await asyncio.to_thread(mobula_client.get_whale_networth_accum, wallet)
+
+    tasks = [_query_one(w) for w in whales]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    mobula_signals: list[dict[str, Any]] = []
+    for data in results:
+        if isinstance(data, dict) and data.get('accum_24h_usd', 0) > 10000:
+            mobula_signals.append(data)
+
+    phase_timing["mobula_networth"] = round(time.monotonic() - t0, 1)
+    _log(f"Mobula networth done: {len(mobula_signals)} accumulating ({time.monotonic()-t0:.1f}s)")
+
+    # Enrich accumulating whales with portfolio (token resolution)
+    if mobula_signals:
+        t1 = time.monotonic()
+        _log(f"Mobula: resolving tokens for {len(mobula_signals)} whales...")
+
+        async def _fetch_portfolio(signal: dict[str, Any]) -> None:
+            portfolio = await asyncio.to_thread(
+                mobula_client.get_whale_portfolio, signal['wallet']
+            )
+            if portfolio:
+                signal['top_tokens'] = portfolio
+                signal['token_mint'] = portfolio[0]['token_mint']
+                signal['token_symbol'] = portfolio[0]['token_symbol']
+
+        portfolio_tasks = [_fetch_portfolio(s) for s in mobula_signals]
+        await asyncio.gather(*portfolio_tasks, return_exceptions=True)
+        phase_timing["mobula_portfolio"] = round(time.monotonic() - t1, 1)
+        _log(f"Mobula portfolio done ({time.monotonic()-t1:.1f}s)")
+
+    return mobula_signals, phase_timing
 
 
 async def _enrich_signals(

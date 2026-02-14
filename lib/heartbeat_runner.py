@@ -24,7 +24,7 @@ from lib.utils.async_batch import batch_price_fetch
 from lib.utils.file_lock import safe_read_json, safe_write_json
 from lib.utils.red_flags import check_concentrated_volume
 from lib.skills.warden_check import check_token
-from lib.skills.oracle_query import query_oracle
+from lib.skills.oracle_query import query_oracle, _empty_flow_intel, _empty_buyer_depth
 from lib.llm_utils import call_grok
 
 import httpx
@@ -158,6 +158,27 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             oracle_signals = oracle_result.get("nansen_signals", [])
             result["oracle_signals"] = oracle_signals
             result["holdings_delta"] = oracle_result.get("holdings_delta", [])
+            result["phase_timing"] = oracle_result.get("phase_timing", {})
+            result["oracle_diagnostics"] = oracle_result.get("diagnostics", [])
+
+            # Extract Mobula whale token candidates into scoring loop
+            mobula_signals = oracle_result.get("mobula_signals", [])
+            existing_mints = {s.get("token_mint") for s in oracle_signals}
+            for ms in mobula_signals:
+                if ms.get("token_mint") and ms["token_mint"] not in existing_mints:
+                    oracle_signals.append({
+                        "token_mint": ms["token_mint"],
+                        "token_symbol": ms.get("token_symbol", "UNKNOWN"),
+                        "wallet_count": 1,
+                        "total_buy_usd": ms.get("accum_24h_usd", 0),
+                        "confidence": ms.get("signal_strength", "low"),
+                        "source": "mobula",
+                        "flow_intel": _empty_flow_intel(),
+                        "buyer_depth": _empty_buyer_depth(),
+                        "dca_count": 0,
+                        "discovery_source": "mobula-whale",
+                    })
+                    existing_mints.add(ms["token_mint"])
         else:
             oracle_signals = []
             oracle_failed = True
