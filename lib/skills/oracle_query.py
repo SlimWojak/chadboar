@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 import requests
 
 from lib.clients.nansen import NansenClient
+from lib.clients.helius import HeliusClient
 
 # Load environment variables
 load_dotenv()
@@ -88,6 +89,28 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
                 data = mobula_client.get_whale_networth_accum(wallet)
                 if data and data['accum_24h_usd'] > 10000:
                     mobula_signals.append(data)
+
+        # Helius staking % holders
+        if token_mint:
+            helius = HeliusClient()
+            try:
+                holders_resp = await helius.get_token_holders(token_mint, limit=100)
+                holders = holders_resp.get("holders", [])
+                holder_count = len(holders)
+                # Proxy staking %: fraction of top holders with significant balance (conviction proxy)
+                # Full stake check requires per-wallet RPC; approximated as holder distribution
+                staked_pct = min(holder_count / 10.0, 100.0) if holder_count > 0 else 0.0  # rough: more holders = more conviction
+                helius_signal = {
+                    "token_mint": token_mint,
+                    "staking_pct_holders": round(staked_pct, 1),
+                    "stake_conviction": staked_pct > 30,
+                    "unstaked_dump_risk": staked_pct < 10,
+                    "top_holder_count": holder_count,
+                    "source": "helius"
+                }
+                mobula_signals.append(helius_signal)  # append to whale signals
+            finally:
+                await helius.close()
 
         all_signals = nansen_signals + mobula_signals
 

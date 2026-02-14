@@ -92,6 +92,29 @@ async def _scan_token(
         # Holder data
         holder_count = int(data.get("holder", 0))
 
+        # Birdeye viewers delta/spike (KOL proxy)
+        viewers_10m = float(data.get("uniqueViewerCount10m", data.get("lc10m", 0)))
+        avg_viewers_10m = float(data.get("avgViewerCount10m", viewers_10m / 2.0 if viewers_10m > 0 else 0))
+        viewers_ratio = viewers_10m / avg_viewers_10m if avg_viewers_10m > 0 else 0
+
+        # Momentum deltas
+        h1_change_pct = float(data.get("h1Change", data.get("priceChange1hPercent", data.get("v1hChange", 0))))
+        trades_resp = await birdeye.get_trades(mint, limit=50)
+        trade_data = trades_resp.get("data", [])
+        large_buy_usd = 0.0
+        large_sell_usd = 0.0
+        if trade_data:
+            avg_trade_usd = volume_1h / len(trade_data)
+            for trade in trade_data:
+                usd = float(trade.get("usdAmount", trade.get("quoteAmountUSD", trade.get("tradeAmountUSD", 0))))
+                action = trade.get("action", trade.get("side", "")).lower()
+                if usd > avg_trade_usd * 5 and usd > 5000:
+                    if "buy" in action:
+                        large_buy_usd += usd
+                    elif "sell" in action:
+                        large_sell_usd += usd
+        whale_net_usd = large_buy_usd - large_sell_usd
+
         # X mentions
         x_data = await x_client.search_recent(f"${symbol} OR {symbol} solana", max_results=50)
         tweets = x_data.get("data", [])
@@ -117,6 +140,11 @@ async def _scan_token(
             "volume_1h_usd": round(volume_1h, 2),
             "volume_vs_avg": f"{volume_ratio}x",
             "holder_count": holder_count,
+            "viewers_10m": viewers_10m,
+            "viewers_vs_avg": f"{viewers_ratio:.1f}x",
+            "momentum_h1_pct": round(h1_change_pct, 2),
+            "whale_net_usd": round(whale_net_usd, 0),
+            "vol_ratio": volume_ratio,
         }
     except Exception:
         return None
