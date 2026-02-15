@@ -285,7 +285,22 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     
     # Step 9: Conviction Scoring
     scorer = ConvictionScorer()
-    
+
+    # Get edge bank bead count for cold-start logic
+    edge_bank_bead_count = 0
+    try:
+        from lib.chain.bead_chain import get_chain_stats
+        chain_stats = get_chain_stats()
+        edge_bank_bead_count = chain_stats.get("total_beads", 0)
+    except Exception:
+        pass  # Chain unavailable — edge bank stays disabled
+
+    # Get SOL price from state
+    sol_price_usd = float(state.get("sol_price_usd", 78.0))
+
+    # Track graduation plays this cycle (for daily sublimit)
+    daily_graduation_count = int(state.get("daily_graduation_count", 0))
+
     # Merge signals by token mint
     all_mints = set()
     for sig in oracle_signals:
@@ -379,12 +394,15 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         )
         
         score = scorer.score(
-            signal_input, 
+            signal_input,
             pot_balance_sol=state["current_balance_sol"],
             data_completeness=result["data_completeness"],
             concentrated_volume=concentrated_vol,
             dumper_wallet_count=dumper_count,
             time_mismatch=time_mismatch_detected,
+            edge_bank_bead_count=edge_bank_bead_count,
+            daily_graduation_count=daily_graduation_count,
+            sol_price_usd=sol_price_usd,
         )
         
         opportunity = {
@@ -474,6 +492,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         opportunity = {
             "token_mint": mint,
             "token_symbol": token_symbol,
+            "play_type": score.play_type,
             "ordering_score": score.ordering_score,
             "permission_score": score.permission_score,
             "breakdown": score.breakdown,
@@ -491,26 +510,30 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                 "rug": rug_status,
             }
         }
-        
+
         result["opportunities"].append(opportunity)
-        
+
         # Decision logic
         if score.recommendation == "VETO":
             result["decisions"].append(f"🐗 VETO: {mint[:8]} — {score.reasoning}")
         elif score.recommendation == "DISCARD":
             result["decisions"].append(f"🐗 NOPE: {mint[:8]} — permission {score.permission_score} < 60")
         elif score.recommendation == "WATCHLIST":
-            result["decisions"].append(f"🐗 WATCHLIST: {mint[:8]} — permission {score.permission_score} (60-84), ordering {score.ordering_score}, primary {len(score.primary_sources)}")
+            result["decisions"].append(f"🐗 WATCHLIST: {mint[:8]} — [{score.play_type}] permission {score.permission_score} (60-84), ordering {score.ordering_score}, primary {len(score.primary_sources)}")
         elif score.recommendation == "AUTO_EXECUTE":
+            # Track graduation plays for daily sublimit
+            if score.play_type == "graduation":
+                daily_graduation_count += 1
+
             if dry_run:
                 result["decisions"].append(
-                    f"🐗🔥 DRY-RUN TRADE: {mint[:8]} — would YOLO {score.position_size_sol:.4f} SOL "
+                    f"🐗🔥 DRY-RUN TRADE: {mint[:8]} — [{score.play_type}] would YOLO {score.position_size_sol:.4f} SOL "
                     f"(permission {score.permission_score}, ordering {score.ordering_score}, "
                     f"primary {len(score.primary_sources)}) OINK!"
                 )
             else:
                 result["decisions"].append(
-                    f"🐗🔥 EXECUTE: {mint[:8]} — {score.position_size_sol:.4f} SOL "
+                    f"🐗🔥 EXECUTE: {mint[:8]} — [{score.play_type}] {score.position_size_sol:.4f} SOL "
                     f"(permission {score.permission_score}, ordering {score.ordering_score}) OINK!"
                 )
                 # TODO: Call execute_swap here in live mode
@@ -522,6 +545,13 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     if dry_run:
         state["dry_run_cycles_completed"] = cycle_num
     state["last_heartbeat_time"] = datetime.utcnow().isoformat()
+
+    # Reset daily graduation count if date changed, otherwise persist
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    if state.get("daily_date") != today:
+        state["daily_graduation_count"] = 0
+    else:
+        state["daily_graduation_count"] = daily_graduation_count
 
     safe_write_json(state_path, state)
 

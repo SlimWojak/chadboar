@@ -180,9 +180,19 @@ class TestPulseParsing:
         assert "PULSE_BONDING_1" in mints
 
     def test_bad_tokens_filtered(self):
-        """Tokens with bundler > 20%, sniper > 30%, organic < 0.3, or low liquidity are rejected."""
+        """Only hard safety filters (liquidity < $5k, volume < $1k) reject at parse level.
+
+        Bundler, sniper, and organic ratio are passed through to scoring
+        where they apply penalties instead of hard rejections.
+        """
         candidates = _parse_pulse_candidates(PULSE_RESPONSE_BAD_TOKENS)
-        assert len(candidates) == 0
+        # 3 tokens pass through (bundler, sniper, low organic) — only LOW_LIQ is filtered
+        assert len(candidates) == 3
+        mints = {c["token_mint"] for c in candidates}
+        assert "LOW_LIQ" not in mints  # Liquidity < $5k still filtered
+        assert "BUNDLER_COIN" in mints  # Passed through, scoring applies -10 penalty
+        assert "SNIPER_COIN" in mints   # Passed through, scoring applies -10 penalty
+        assert "BOT_COIN" in mints      # Passed through, scoring applies -10 penalty
 
     def test_empty_response(self):
         """Empty pulse response returns no candidates."""

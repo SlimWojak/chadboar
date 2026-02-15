@@ -17,21 +17,38 @@ trade:
   slippage_max_pct: 3          # Jupiter slippage parameter
   max_position_pct: 5          # Maximum 5% of pot per trade
 
-# Conviction scoring
+# Conviction scoring — dual profiles for graduation vs accumulation plays
 conviction:
-  # Signal weights (max points per signal)
+  # Signal weights (max points per signal) — ACCUMULATION profile (default)
   weights:
     smart_money_oracle: 40     # +15 per whale, cap 40 (3+ whales)
     narrative_hunter: 30       # Volume spike >5x + KOL detection, decay after 30min
     rug_warden: 20             # Binary: PASS = +20, FAIL = instant veto
-    edge_bank: 10              # Similar setup match >70% from past winners
-  
+    edge_bank: 10              # Similar setup match >70% from past winners (0 until 10+ beads)
+
+  # GRADUATION profile — Pulse-sourced speed plays (PumpFun → Raydium migration)
+  weights_graduation:
+    pulse_quality: 35          # Organic ratio, pro trader %, ghost metadata
+    narrative_hunter: 30       # Volume spike + KOL (social confirmation)
+    rug_warden: 25             # Higher weight — less data = need more safety assurance
+    smart_money_oracle: 0      # Structurally unavailable for new tokens (neutral, not penalty)
+    edge_bank: 10              # Same as accumulation (0 until 10+ beads, redistributed to warden)
+
   # Thresholds
   thresholds:
-    auto_execute: 85           # ≥85: auto-execute (within existing tier gates)
-    watchlist: 60              # 60-84: log as watchlist, alert G with breakdown
+    auto_execute: 85           # ≥85: accumulation auto-execute
+    auto_execute_graduation: 70  # ≥70: graduation auto-execute (lower data = lower bar)
+    watchlist: 60              # 60+: watchlist, alert G with breakdown
     discard: 60                # <60: discard, no alert
-  
+
+  # Edge bank cold start: disabled until this many beads exist
+  edge_bank_min_beads: 10      # Below this, edge_bank points redistributed to rug_warden
+
+  # Graduation play limits
+  graduation:
+    max_position_usd: 50       # Hard cap per graduation trade (within INV-HUMAN-GATE-100)
+    max_daily_plays: 3         # Max graduation trades per day (concentrated risk guardrail)
+
   # Position sizing parameters
   sizing:
     base_multiplier: 0.01      # (score/100) × (pot × 0.01)

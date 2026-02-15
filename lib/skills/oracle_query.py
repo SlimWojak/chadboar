@@ -504,13 +504,8 @@ def _extract_pulse_token(token: dict[str, Any], stage: str) -> dict[str, Any] | 
     organic_vol = float(token.get("organicVolume", total_vol))
     organic_ratio = round(organic_vol / total_vol, 3) if total_vol > 0 else 0.0
 
-    # Red flag filters (hard reject)
-    if bundler_pct > 20:
-        return None
-    if sniper_pct > 30:
-        return None
-    if organic_ratio < 0.3:
-        return None
+    # Quality flags (passed through to scoring — no longer hard rejections)
+    # Scoring applies penalties: bundler >20% (-10), sniper >30% (-10), organic <0.3 (-10)
 
     # Ghost metadata detection (no socials but volume exists)
     has_socials = bool(token.get("twitter") or token.get("website") or token.get("telegram"))

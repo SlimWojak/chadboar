@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-Conviction Scoring System
-Weighted signal aggregation for trade decision-making.
+Conviction Scoring System — Dual-profile play-type routing.
+
+Two fundamentally different play types:
+  - Graduation (speed): Pulse-sourced PumpFun → Raydium migrations. Minutes, not hours.
+  - Accumulation (conviction): Nansen whale accumulation. Hours to days.
+
+Each gets its own weight profile, threshold, and position cap.
 """
 import yaml
 from pathlib import Path
 from typing import Dict, List, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -43,58 +48,95 @@ class ConvictionScore:
     recommendation: str  # AUTO_EXECUTE, WATCHLIST, DISCARD, VETO
     position_size_sol: float
     reasoning: str
+    play_type: str = "accumulation"  # graduation | accumulation
+
+
+def detect_play_type(signals: SignalInput) -> str:
+    """Classify opportunity as graduation or accumulation play.
+
+    Graduation: Pulse-sourced token with no whale data (brand new token).
+    Accumulation: Established token with whale signals.
+    """
+    has_pulse = (
+        signals.pulse_pro_trader_pct > 0
+        or signals.pulse_ghost_metadata
+        or signals.pulse_organic_ratio < 1.0
+        or signals.pulse_bundler_pct > 0
+        or signals.pulse_sniper_pct > 0
+        or signals.pulse_deployer_migrations > 0
+    )
+    has_whales = signals.smart_money_whales >= 1
+
+    if has_pulse and not has_whales:
+        return "graduation"
+    # Triple-lock convergence (pulse + whales) or whale-only → accumulation
+    return "accumulation"
 
 
 class ConvictionScorer:
     """Calculate conviction scores from signal inputs."""
-    
+
     def __init__(self, config_path: Path = Path("config/risk.yaml")):
         """Load scoring configuration."""
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
-        
+
         self.weights = self.config['conviction']['weights']
+        self.weights_graduation = self.config['conviction'].get('weights_graduation', self.weights)
         self.thresholds = self.config['conviction']['thresholds']
         self.sizing = self.config['conviction']['sizing']
         self.portfolio = self.config['portfolio']
         self.trade_limits = self.config['trade']
-    
-    def score_smart_money_oracle(self, whales: int) -> tuple[int, str]:
+        self.graduation_config = self.config['conviction'].get('graduation', {})
+        self.edge_bank_min_beads = self.config['conviction'].get('edge_bank_min_beads', 10)
+
+    def _get_weights(self, play_type: str) -> dict:
+        """Get weight profile for play type."""
+        if play_type == "graduation":
+            return dict(self.weights_graduation)
+        return dict(self.weights)
+
+    def _get_auto_execute_threshold(self, play_type: str) -> int:
+        """Get auto-execute threshold for play type."""
+        if play_type == "graduation":
+            return self.thresholds.get('auto_execute_graduation', 70)
+        return self.thresholds['auto_execute']
+
+    def score_smart_money_oracle(self, whales: int, max_points: int = 40) -> tuple[int, str]:
         """Score whale accumulation signals."""
         if whales == 0:
             return 0, "No whale accumulation detected"
-        
-        # +15 per whale, cap at 40 (requires 3+ whales for max)
-        score = min(whales * 15, self.weights['smart_money_oracle'])
-        
+
+        # +15 per whale, cap at max_points
+        score = min(whales * 15, max_points)
+
         if whales >= 3:
             return score, f"{whales} distinct whales accumulating (max points)"
         else:
             return score, f"{whales} whale(s) detected (+15 each)"
-    
+
     def score_narrative_hunter(
-        self, 
-        volume_spike: float, 
-        kol_detected: bool, 
-        age_minutes: int
+        self,
+        volume_spike: float,
+        kol_detected: bool,
+        age_minutes: int,
+        max_points: int = 30,
     ) -> tuple[int, str]:
         """Score social momentum + volume signals."""
-        max_points = self.weights['narrative_hunter']
-        
         # No signal
         if volume_spike < 5.0 and not kol_detected:
             return 0, "No narrative momentum"
-        
+
         # Base score from volume spike
         if volume_spike >= 5.0:
-            # Scale: 5x = 15pts, 10x = 25pts, 20x+ = 30pts
+            # Scale: 5x = 15pts, 10x = 25pts, 20x+ = max_points
             base = min(int((volume_spike / 5.0) * 15), 25)
         else:
             base = 0
-        
+
         # KOL bonus
         kol_bonus = 10 if kol_detected else 0
-        
+
         # Time decay: full points until 30min, then decay to 0 at 60min
         if age_minutes <= 30:
             decay_factor = 1.0
@@ -102,10 +144,10 @@ class ConvictionScorer:
             decay_factor = 1.0 - ((age_minutes - 30) / 30)
         else:
             decay_factor = 0.0
-        
+
         score = int((base + kol_bonus) * decay_factor)
         score = min(score, max_points)
-        
+
         reasoning_parts = []
         if volume_spike >= 5.0:
             reasoning_parts.append(f"{volume_spike:.1f}x volume spike")
@@ -113,77 +155,142 @@ class ConvictionScorer:
             reasoning_parts.append("KOL detected")
         if age_minutes > 30:
             reasoning_parts.append(f"decayed ({age_minutes}min old)")
-        
+
         reasoning = ", ".join(reasoning_parts) if reasoning_parts else "No narrative signal"
-        
+
         return score, reasoning
-    
-    def score_rug_warden(self, status: str) -> tuple[int, str]:
+
+    def score_rug_warden(self, status: str, max_points: int = 20) -> tuple[int, str]:
         """Score Rug Warden validation."""
         if status == "PASS":
-            return self.weights['rug_warden'], "Rug Warden: PASS"
+            return max_points, "Rug Warden: PASS"
         elif status == "WARN":
-            return int(self.weights['rug_warden'] * 0.5), "Rug Warden: WARN (partial points)"
+            return int(max_points * 0.5), "Rug Warden: WARN (partial points)"
         else:  # FAIL or UNKNOWN
             return 0, f"Rug Warden: {status}"
-    
-    def score_edge_bank(self, match_pct: float) -> tuple[int, str]:
+
+    def score_edge_bank(self, match_pct: float, max_points: int = 10) -> tuple[int, str]:
         """Score historical pattern match."""
-        max_points = self.weights['edge_bank']
-        
         if match_pct < 70.0:
             return 0, "No strong historical match"
-        
-        # Linear scale from 70% (5pts) to 100% (10pts)
+
+        # Linear scale from 70% (5pts) to 100% (max_points)
         score = int(((match_pct - 70) / 30) * max_points)
         score = min(score, max_points)
-        
+
         return score, f"{match_pct:.0f}% match to past winners"
-    
+
+    def score_pulse_quality(
+        self,
+        signals: SignalInput,
+        max_points: int = 35,
+    ) -> tuple[int, str, dict]:
+        """Score Pulse quality signals (graduation profile).
+
+        Combines ghost metadata, pro trader %, organic ratio into
+        a single score component for the graduation weight profile.
+        """
+        score = 0
+        parts = []
+        breakdown_extra = {}
+
+        # Base: organic ratio quality (0-15 pts)
+        if signals.pulse_organic_ratio >= 0.7:
+            organic_pts = 15
+        elif signals.pulse_organic_ratio >= 0.5:
+            organic_pts = 10
+        elif signals.pulse_organic_ratio >= 0.3:
+            organic_pts = 5
+        else:
+            organic_pts = 0
+        score += organic_pts
+        breakdown_extra['pulse_organic'] = organic_pts
+        if organic_pts > 0:
+            parts.append(f"organic {signals.pulse_organic_ratio:.0%}")
+
+        # Ghost metadata bonus (+5)
+        if signals.pulse_ghost_metadata:
+            score += 5
+            breakdown_extra['pulse_ghost'] = 5
+            parts.append("ghost metadata")
+
+        # Pro trader holdings (+10 if >10%, +5 if >5%)
+        if signals.pulse_pro_trader_pct > 10:
+            pro_pts = 10
+        elif signals.pulse_pro_trader_pct > 5:
+            pro_pts = 5
+        else:
+            pro_pts = 0
+        score += pro_pts
+        breakdown_extra['pulse_pro_trader'] = pro_pts
+        if pro_pts > 0:
+            parts.append(f"pro traders {signals.pulse_pro_trader_pct:.1f}%")
+
+        # Low bundler bonus (+5 if <5%)
+        if signals.pulse_bundler_pct < 5:
+            score += 5
+            breakdown_extra['pulse_clean_holders'] = 5
+            parts.append("clean holders")
+
+        score = min(score, max_points)
+        reasoning = f"Pulse: {', '.join(parts)}" if parts else "Pulse: no quality signals"
+
+        return score, reasoning, breakdown_extra
+
     def calculate_position_size(
-        self, 
-        score: int, 
+        self,
+        score: int,
         pot_balance_sol: float,
-        volatility_factor: float = 1.0
+        volatility_factor: float = 1.0,
+        play_type: str = "accumulation",
+        sol_price_usd: float = 78.0,
     ) -> float:
-        """Calculate position size based on conviction score."""
-        # Formula: size = (score / 100) × (pot × 0.01) × (1 / volatility_factor)
+        """Calculate position size based on conviction score and play type."""
+        # Formula: size = (score / 100) x (pot x 0.01) x (1 / volatility_factor)
         base_size = (score / 100) * (pot_balance_sol * self.sizing['base_multiplier'])
         adjusted_size = base_size / volatility_factor
-        
+
         # Cap at max_position_pct
         max_size = pot_balance_sol * (self.trade_limits['max_position_pct'] / 100)
-        return min(adjusted_size, max_size)
-    
+        size = min(adjusted_size, max_size)
+
+        # Graduation hard cap: max_position_usd (default $50)
+        if play_type == "graduation":
+            grad_max_usd = self.graduation_config.get('max_position_usd', 50)
+            grad_max_sol = grad_max_usd / sol_price_usd if sol_price_usd > 0 else 0.65
+            size = min(size, grad_max_sol)
+
+        return size
+
     def score(
-        self, 
+        self,
         signals: SignalInput,
         pot_balance_sol: float,
         volatility_factor: float = 1.0,
-        data_completeness: float = 1.0,  # Phase 2: uncertainty multiplier
-        concentrated_volume: bool = False,  # Phase 3: red flag
-        dumper_wallet_count: int = 0,  # Phase 3: red flag
-        time_mismatch: bool = False,  # Phase 4: disagreement flag
+        data_completeness: float = 1.0,
+        concentrated_volume: bool = False,
+        dumper_wallet_count: int = 0,
+        time_mismatch: bool = False,
+        edge_bank_bead_count: int = 0,
+        daily_graduation_count: int = 0,
+        sol_price_usd: float = 78.0,
     ) -> ConvictionScore:
         """
         Calculate total conviction score and recommendation.
-        
-        Args:
-            signals: Input signals from detectors
-            pot_balance_sol: Current pot balance in SOL
-            volatility_factor: Volatility adjustment (default 1.0)
-            data_completeness: Multiplier for partial data penalty (0.0-1.0)
-        
-        Returns:
-            ConvictionScore with ordering_score, permission_score, and recommendation
+
+        Play-type routing: detects graduation vs accumulation and applies
+        the appropriate weight profile, threshold, and position cap.
         """
         breakdown = {}
         red_flags = {}
         primary_sources = []
         reasoning_parts = []
-        
-        # VETO CHECKS (Expanded in Phase 6)
-        
+
+        # Detect play type
+        play_type = detect_play_type(signals)
+
+        # VETO CHECKS (apply to ALL play types)
+
         # VETO 1: Rug Warden FAIL (INV-RUG-WARDEN-VETO)
         if signals.rug_warden_status == "FAIL":
             return ConvictionScore(
@@ -194,11 +301,12 @@ class ConvictionScorer:
                 primary_sources=[],
                 recommendation="VETO",
                 position_size_sol=0.0,
-                reasoning="VETO: Rug Warden FAIL (INV-RUG-WARDEN-VETO)"
+                reasoning="VETO: Rug Warden FAIL (INV-RUG-WARDEN-VETO)",
+                play_type=play_type,
             )
-        
+
         # VETO 2: All whales are dumpers (checked in red flag section below)
-        
+
         # VETO 3: Token too new (<2min)
         if signals.narrative_age_minutes < 2 and signals.narrative_volume_spike >= 5.0:
             return ConvictionScore(
@@ -209,15 +317,16 @@ class ConvictionScorer:
                 primary_sources=[],
                 recommendation="VETO",
                 position_size_sol=0.0,
-                reasoning="VETO: Token created <2min ago (too new for organic discovery)"
+                reasoning="VETO: Token created <2min ago (too new for organic discovery)",
+                play_type=play_type,
             )
-        
-        # VETO 4: Volume spike ≥10x with near-zero social
-        if (signals.narrative_volume_spike >= 10.0 and 
-            not signals.narrative_kol_detected):
-            # Check if there's truly zero social presence
-            # For now, KOL detection is our proxy for social activity
-            # This veto triggers when there's massive volume but no KOL mentions
+
+        # VETO 4: Volume spike >=10x with near-zero social — ACCUMULATION ONLY
+        # For graduation plays, high volume without KOL is normal (on-chain activity,
+        # not social media). Only suspicious for established tokens.
+        if (play_type == "accumulation"
+                and signals.narrative_volume_spike >= 10.0
+                and not signals.narrative_kol_detected):
             return ConvictionScore(
                 ordering_score=0,
                 permission_score=0,
@@ -226,64 +335,151 @@ class ConvictionScorer:
                 primary_sources=[],
                 recommendation="VETO",
                 position_size_sol=0.0,
-                reasoning=f"VETO: {signals.narrative_volume_spike:.0f}x volume spike with no social activity (wash trading)"
+                reasoning=f"VETO: {signals.narrative_volume_spike:.0f}x volume spike with no social activity (wash trading)",
+                play_type=play_type,
             )
-        
-        # VETO 5: Liquidity dropping during detection
-        # This requires passing liquidity delta as a parameter
-        # For now, this veto is handled in Rug Warden checks
-        # TODO: Add liquidity_delta parameter in future enhancement
-        
-        # Score each signal
-        oracle_score, oracle_reason = self.score_smart_money_oracle(signals.smart_money_whales)
-        breakdown['smart_money_oracle'] = oracle_score
-        reasoning_parts.append(f"Oracle: {oracle_reason}")
-        
-        # PRIMARY SOURCE 1: Oracle (≥3 whales)
-        if signals.smart_money_whales >= 3:
-            primary_sources.append("oracle")
-        
-        narrative_score, narrative_reason = self.score_narrative_hunter(
-            signals.narrative_volume_spike,
-            signals.narrative_kol_detected,
-            signals.narrative_age_minutes
-        )
-        breakdown['narrative_hunter'] = narrative_score
-        reasoning_parts.append(f"Narrative: {narrative_reason}")
-        
-        # PRIMARY SOURCE 2: Narrative (≥5x volume spike)
-        if signals.narrative_volume_spike >= 5.0:
-            primary_sources.append("narrative")
-        
-        warden_score, warden_reason = self.score_rug_warden(signals.rug_warden_status)
-        breakdown['rug_warden'] = warden_score
-        reasoning_parts.append(f"Warden: {warden_reason}")
-        
-        # PRIMARY SOURCE 3: Rug Warden (PASS or WARN)
-        if signals.rug_warden_status in ["PASS", "WARN"]:
-            primary_sources.append("warden")
-        
-        edge_score, edge_reason = self.score_edge_bank(signals.edge_bank_match_pct)
-        breakdown['edge_bank'] = edge_score
-        reasoning_parts.append(f"Edge: {edge_reason}")
-        
+
+        # VETO 6: Graduation daily sublimit exceeded
+        grad_max_daily = self.graduation_config.get('max_daily_plays', 3)
+        if play_type == "graduation" and daily_graduation_count >= grad_max_daily:
+            return ConvictionScore(
+                ordering_score=0,
+                permission_score=0,
+                breakdown={},
+                red_flags={},
+                primary_sources=[],
+                recommendation="VETO",
+                position_size_sol=0.0,
+                reasoning=f"VETO: Graduation daily limit reached ({daily_graduation_count}/{grad_max_daily})",
+                play_type=play_type,
+            )
+
+        # Get weight profile for play type
+        weights = self._get_weights(play_type)
+
+        # Edge bank cold start: if <10 beads, redistribute points to rug_warden
+        edge_bank_active = edge_bank_bead_count >= self.edge_bank_min_beads
+        if not edge_bank_active:
+            warden_bonus = weights.get('edge_bank', 0)
+            weights['rug_warden'] = weights.get('rug_warden', 20) + warden_bonus
+            weights['edge_bank'] = 0
+
+        # --- SCORE COMPONENTS ---
+
+        if play_type == "graduation":
+            # GRADUATION PROFILE: Pulse quality is the primary signal
+            pulse_score, pulse_reason, pulse_extra = self.score_pulse_quality(
+                signals, max_points=weights.get('pulse_quality', 35),
+            )
+            breakdown['pulse_quality'] = pulse_score
+            breakdown.update(pulse_extra)
+            reasoning_parts.append(pulse_reason)
+
+            # PRIMARY SOURCE: Pulse (organic >= 0.3 and some quality signal)
+            if pulse_score >= 15:
+                primary_sources.append("pulse")
+
+            # Narrative
+            narrative_score, narrative_reason = self.score_narrative_hunter(
+                signals.narrative_volume_spike,
+                signals.narrative_kol_detected,
+                signals.narrative_age_minutes,
+                max_points=weights.get('narrative_hunter', 30),
+            )
+            breakdown['narrative_hunter'] = narrative_score
+            reasoning_parts.append(f"Narrative: {narrative_reason}")
+            if signals.narrative_volume_spike >= 5.0:
+                primary_sources.append("narrative")
+
+            # Rug Warden
+            warden_score, warden_reason = self.score_rug_warden(
+                signals.rug_warden_status,
+                max_points=weights.get('rug_warden', 25),
+            )
+            breakdown['rug_warden'] = warden_score
+            reasoning_parts.append(f"Warden: {warden_reason}")
+            if signals.rug_warden_status in ["PASS", "WARN"]:
+                primary_sources.append("warden")
+
+            # SMO: structurally 0 for graduation (neutral, not penalty)
+            breakdown['smart_money_oracle'] = 0
+
+            # Edge Bank
+            if edge_bank_active:
+                edge_score, edge_reason = self.score_edge_bank(
+                    signals.edge_bank_match_pct,
+                    max_points=weights.get('edge_bank', 10),
+                )
+                breakdown['edge_bank'] = edge_score
+                reasoning_parts.append(f"Edge: {edge_reason}")
+            else:
+                breakdown['edge_bank'] = 0
+                reasoning_parts.append(f"Edge: cold start (warden +{warden_bonus}pts)")
+
+            reasoning_parts.insert(0, "[GRADUATION]")
+
+        else:
+            # ACCUMULATION PROFILE: SMO is the primary signal
+            oracle_score, oracle_reason = self.score_smart_money_oracle(
+                signals.smart_money_whales,
+                max_points=weights.get('smart_money_oracle', 40),
+            )
+            breakdown['smart_money_oracle'] = oracle_score
+            reasoning_parts.append(f"Oracle: {oracle_reason}")
+            if signals.smart_money_whales >= 3:
+                primary_sources.append("oracle")
+
+            # Narrative
+            narrative_score, narrative_reason = self.score_narrative_hunter(
+                signals.narrative_volume_spike,
+                signals.narrative_kol_detected,
+                signals.narrative_age_minutes,
+                max_points=weights.get('narrative_hunter', 30),
+            )
+            breakdown['narrative_hunter'] = narrative_score
+            reasoning_parts.append(f"Narrative: {narrative_reason}")
+            if signals.narrative_volume_spike >= 5.0:
+                primary_sources.append("narrative")
+
+            # Rug Warden
+            warden_score, warden_reason = self.score_rug_warden(
+                signals.rug_warden_status,
+                max_points=weights.get('rug_warden', 20),
+            )
+            breakdown['rug_warden'] = warden_score
+            reasoning_parts.append(f"Warden: {warden_reason}")
+            if signals.rug_warden_status in ["PASS", "WARN"]:
+                primary_sources.append("warden")
+
+            # Edge Bank
+            if edge_bank_active:
+                edge_score, edge_reason = self.score_edge_bank(
+                    signals.edge_bank_match_pct,
+                    max_points=weights.get('edge_bank', 10),
+                )
+                breakdown['edge_bank'] = edge_score
+                reasoning_parts.append(f"Edge: {edge_reason}")
+            else:
+                breakdown['edge_bank'] = 0
+                reasoning_parts.append(f"Edge: cold start (warden +{warden_bonus}pts)")
+
         # ORDERING SCORE: Pure signal strength
-        ordering_score = sum(breakdown.values())
-        
+        ordering_score = sum(v for k, v in breakdown.items()
+                            if not k.startswith('pulse_') or k == 'pulse_quality')
+
         # PERMISSION SCORE: Start with ordering, apply penalties
         permission_score = ordering_score
-        
+
         # RED FLAG 1: Concentrated Volume (B1)
         if concentrated_volume:
             penalty = 15
             red_flags['concentrated_volume'] = -penalty
             permission_score -= penalty
-            reasoning_parts.append(f"RED FLAG: Concentrated volume (−{penalty} pts)")
-        
+            reasoning_parts.append(f"RED FLAG: Concentrated volume (-{penalty} pts)")
+
         # RED FLAG 2: Dumper Wallets (B1)
         if dumper_wallet_count > 0:
             if dumper_wallet_count >= signals.smart_money_whales and signals.smart_money_whales > 0:
-                # ALL whales are dumpers → VETO
                 return ConvictionScore(
                     ordering_score=ordering_score,
                     permission_score=0,
@@ -292,35 +488,33 @@ class ConvictionScorer:
                     primary_sources=primary_sources,
                     recommendation="VETO",
                     position_size_sol=0.0,
-                    reasoning=f"All {dumper_wallet_count} whale(s) are known dumpers — trade vetoed"
+                    reasoning=f"All {dumper_wallet_count} whale(s) are known dumpers — trade vetoed",
+                    play_type=play_type,
                 )
             else:
-                # Partial dumpers → gradient penalty
                 if dumper_wallet_count == 1:
                     penalty = 15
-                else:  # 2+
+                else:
                     penalty = 30
                 red_flags['dumper_wallets'] = -penalty
                 permission_score -= penalty
-                reasoning_parts.append(f"RED FLAG: {dumper_wallet_count} dumper wallet(s) (−{penalty} pts)")
-        
+                reasoning_parts.append(f"RED FLAG: {dumper_wallet_count} dumper wallet(s) (-{penalty} pts)")
+
         # RED FLAG 3: Fresh Wallet Concentration (TGM)
         if signals.fresh_wallet_inflow_usd > 50000:
             penalty = 10
             red_flags['fresh_wallet_concentration'] = -penalty
             permission_score -= penalty
-            reasoning_parts.append(f"RED FLAG: Fresh wallet inflow ${signals.fresh_wallet_inflow_usd:,.0f} (−{penalty} pts)")
+            reasoning_parts.append(f"RED FLAG: Fresh wallet inflow ${signals.fresh_wallet_inflow_usd:,.0f} (-{penalty} pts)")
 
         # RED FLAG 4: Exchange Inflow / Distribution Pattern (TGM)
         if signals.exchange_outflow_usd > 0:
             penalty = 10
             red_flags['exchange_inflow'] = -penalty
             permission_score -= penalty
-            reasoning_parts.append(f"RED FLAG: Exchange inflow ${signals.exchange_outflow_usd:,.0f} — distribution pattern (−{penalty} pts)")
+            reasoning_parts.append(f"RED FLAG: Exchange inflow ${signals.exchange_outflow_usd:,.0f} — distribution pattern (-{penalty} pts)")
 
-        # RED FLAG 5: S2 Divergence Damping (Oracle ↔ Narrative mismatch)
-        # Whales accumulating but zero narrative momentum → suspicious
-        # accumulation without organic discovery.
+        # RED FLAG 5: S2 Divergence Damping (Oracle <-> Narrative mismatch)
         if (signals.smart_money_whales >= 2
                 and signals.narrative_volume_spike < 2.0
                 and not signals.narrative_kol_detected):
@@ -329,92 +523,90 @@ class ConvictionScorer:
             permission_score -= penalty
             reasoning_parts.append(
                 f"S2 DAMPING: {signals.smart_money_whales} whales but no narrative "
-                f"momentum (−{penalty} pts)"
+                f"momentum (-{penalty} pts)"
             )
 
-        # PULSE SCORING (Phase 0 — Mobula Pulse bonding/bonded signals)
-
-        # PULSE BONUS 1: Ghost metadata (stealth launch, no socials but volume)
-        if signals.pulse_ghost_metadata:
-            bonus = 5
-            breakdown['pulse_ghost'] = bonus
-            ordering_score += bonus
-            permission_score += bonus
-            reasoning_parts.append(f"PULSE BONUS: Ghost metadata (+{bonus} pts)")
-
-        # PULSE BONUS 2: Pro traders > 10% holdings
-        if signals.pulse_pro_trader_pct > 10:
-            bonus = 5
-            breakdown['pulse_pro_trader'] = bonus
-            ordering_score += bonus
-            permission_score += bonus
-            reasoning_parts.append(f"PULSE BONUS: Pro traders {signals.pulse_pro_trader_pct:.1f}% (+{bonus} pts)")
-
-        # PULSE RED FLAG 1: Low organic volume ratio (< 0.3 = bot/fake volume)
+        # PULSE RED FLAGS (apply to both play types — scoring penalties, not pre-filters)
         if signals.pulse_organic_ratio < 0.3 and signals.pulse_organic_ratio > 0:
             penalty = 10
             red_flags['pulse_low_organic'] = -penalty
             permission_score -= penalty
-            reasoning_parts.append(f"PULSE RED FLAG: Organic ratio {signals.pulse_organic_ratio:.2f} (−{penalty} pts)")
+            reasoning_parts.append(f"PULSE RED FLAG: Organic ratio {signals.pulse_organic_ratio:.2f} (-{penalty} pts)")
 
-        # PULSE RED FLAG 2: High bundler holdings (> 20%)
         if signals.pulse_bundler_pct > 20:
             penalty = 10
             red_flags['pulse_bundler'] = -penalty
             permission_score -= penalty
-            reasoning_parts.append(f"PULSE RED FLAG: Bundlers {signals.pulse_bundler_pct:.1f}% (−{penalty} pts)")
+            reasoning_parts.append(f"PULSE RED FLAG: Bundlers {signals.pulse_bundler_pct:.1f}% (-{penalty} pts)")
 
-        # PULSE RED FLAG 3: High sniper holdings (> 30%)
         if signals.pulse_sniper_pct > 30:
             penalty = 10
             red_flags['pulse_sniper'] = -penalty
             permission_score -= penalty
-            reasoning_parts.append(f"PULSE RED FLAG: Snipers {signals.pulse_sniper_pct:.1f}% (−{penalty} pts)")
+            reasoning_parts.append(f"PULSE RED FLAG: Snipers {signals.pulse_sniper_pct:.1f}% (-{penalty} pts)")
 
-        # PULSE RED FLAG 4: Serial deployer (> 3 migrations = rug risk)
         if signals.pulse_deployer_migrations > 3:
             penalty = 10
             red_flags['pulse_serial_deployer'] = -penalty
             permission_score -= penalty
-            reasoning_parts.append(f"PULSE RED FLAG: Deployer {signals.pulse_deployer_migrations} migrations (−{penalty} pts)")
+            reasoning_parts.append(f"PULSE RED FLAG: Deployer {signals.pulse_deployer_migrations} migrations (-{penalty} pts)")
 
-        # PRIMARY SOURCE: Pulse (bonded + pro_trader > 10%)
-        if signals.pulse_pro_trader_pct > 10 and signals.pulse_organic_ratio >= 0.3:
-            primary_sources.append("pulse")
+        # PULSE BONUSES for accumulation play type (graduation handles these in score_pulse_quality)
+        if play_type == "accumulation":
+            if signals.pulse_ghost_metadata:
+                bonus = 5
+                breakdown['pulse_ghost'] = bonus
+                ordering_score += bonus
+                permission_score += bonus
+                reasoning_parts.append(f"PULSE BONUS: Ghost metadata (+{bonus} pts)")
+
+            if signals.pulse_pro_trader_pct > 10:
+                bonus = 5
+                breakdown['pulse_pro_trader'] = bonus
+                ordering_score += bonus
+                permission_score += bonus
+                reasoning_parts.append(f"PULSE BONUS: Pro traders {signals.pulse_pro_trader_pct:.1f}% (+{bonus} pts)")
+
+            # PRIMARY SOURCE: Pulse (accumulation profile)
+            if signals.pulse_pro_trader_pct > 10 and signals.pulse_organic_ratio >= 0.3:
+                primary_sources.append("pulse")
 
         # Apply data completeness penalty (Phase 2)
         permission_score = int(permission_score * data_completeness)
         if data_completeness < 1.0:
             reasoning_parts.append(f"Data completeness: {data_completeness:.1%}")
-        
-        # PERMISSION GATE (A1): Require ≥2 PRIMARY sources for AUTO_EXECUTE
+
+        # PERMISSION GATE (A1): Require >=2 PRIMARY sources for AUTO_EXECUTE
         num_primary = len(primary_sources)
-        
+        auto_threshold = self._get_auto_execute_threshold(play_type)
+
         # Determine base recommendation
-        if permission_score >= self.thresholds['auto_execute']:
-            # CONSTITUTIONAL GATE: AUTO_EXECUTE requires ≥2 PRIMARY sources
+        if permission_score >= auto_threshold:
             if num_primary >= 2:
                 recommendation = "AUTO_EXECUTE"
             else:
                 recommendation = "WATCHLIST"
-                reasoning_parts.append(f"PERMISSION GATE: Only {num_primary} primary source(s) — need ≥2 for AUTO_EXECUTE")
+                reasoning_parts.append(f"PERMISSION GATE: Only {num_primary} primary source(s) — need >=2 for AUTO_EXECUTE")
         elif permission_score >= self.thresholds['watchlist']:
             recommendation = "WATCHLIST"
         else:
             recommendation = "DISCARD"
-        
+
         # TIME MISMATCH DOWNGRADE (B2): Oracle accumulation + Narrative age <5min
         if time_mismatch:
             if recommendation == "AUTO_EXECUTE":
                 recommendation = "WATCHLIST"
-                reasoning_parts.append("TIME MISMATCH: Oracle + Narrative <5min → downgraded to WATCHLIST")
+                reasoning_parts.append("TIME MISMATCH: Oracle + Narrative <5min -> downgraded to WATCHLIST")
             elif recommendation == "WATCHLIST":
                 recommendation = "DISCARD"
-                reasoning_parts.append("TIME MISMATCH: Oracle + Narrative <5min → downgraded to DISCARD")
-        
-        # Calculate position size (use permission_score, not ordering)
-        position_size = self.calculate_position_size(permission_score, pot_balance_sol, volatility_factor)
-        
+                reasoning_parts.append("TIME MISMATCH: Oracle + Narrative <5min -> downgraded to DISCARD")
+
+        # Calculate position size
+        position_size = self.calculate_position_size(
+            permission_score, pot_balance_sol, volatility_factor,
+            play_type=play_type, sol_price_usd=sol_price_usd,
+        )
+
         return ConvictionScore(
             ordering_score=ordering_score,
             permission_score=permission_score,
@@ -423,7 +615,8 @@ class ConvictionScorer:
             primary_sources=primary_sources,
             recommendation=recommendation,
             position_size_sol=position_size,
-            reasoning=" | ".join(reasoning_parts)
+            reasoning=" | ".join(reasoning_parts),
+            play_type=play_type,
         )
 
 
@@ -431,7 +624,7 @@ def main():
     """CLI for testing conviction scoring."""
     import argparse
     import json
-    
+
     parser = argparse.ArgumentParser(description="Calculate conviction score")
     parser.add_argument("--whales", type=int, default=0, help="Number of whales accumulating")
     parser.add_argument("--volume-spike", type=float, default=0.0, help="Volume multiple vs avg")
@@ -448,6 +641,13 @@ def main():
     parser.add_argument("--fresh-wallet-inflow", type=float, default=0.0, help="Fresh wallet inflow USD")
     parser.add_argument("--sm-buy-volume", type=float, default=0.0, help="Smart money buy volume USD")
     parser.add_argument("--dca-count", type=int, default=0, help="Active smart money DCAs")
+    # Pulse fields
+    parser.add_argument("--pulse-ghost", action="store_true", help="Ghost metadata detected")
+    parser.add_argument("--pulse-organic", type=float, default=1.0, help="Pulse organic ratio")
+    parser.add_argument("--pulse-bundler", type=float, default=0.0, help="Pulse bundler %")
+    parser.add_argument("--pulse-sniper", type=float, default=0.0, help="Pulse sniper %")
+    parser.add_argument("--pulse-pro", type=float, default=0.0, help="Pulse pro trader %")
+    parser.add_argument("--pulse-deployer", type=int, default=0, help="Deployer migrations")
 
     args = parser.parse_args()
 
@@ -462,19 +662,26 @@ def main():
         fresh_wallet_inflow_usd=args.fresh_wallet_inflow,
         smart_money_buy_volume_usd=args.sm_buy_volume,
         dca_count=args.dca_count,
+        pulse_ghost_metadata=args.pulse_ghost,
+        pulse_organic_ratio=args.pulse_organic,
+        pulse_bundler_pct=args.pulse_bundler,
+        pulse_sniper_pct=args.pulse_sniper,
+        pulse_pro_trader_pct=args.pulse_pro,
+        pulse_deployer_migrations=args.pulse_deployer,
     )
-    
+
     scorer = ConvictionScorer()
     result = scorer.score(
-        signals, 
-        args.pot, 
+        signals,
+        args.pot,
         args.volatility,
         concentrated_volume=args.concentrated_vol,
         dumper_wallet_count=args.dumpers,
         time_mismatch=args.time_mismatch,
     )
-    
+
     output = {
+        "play_type": result.play_type,
         "ordering_score": result.ordering_score,
         "permission_score": result.permission_score,
         "breakdown": result.breakdown,
@@ -482,9 +689,9 @@ def main():
         "primary_sources": result.primary_sources,
         "recommendation": result.recommendation,
         "position_size_sol": round(result.position_size_sol, 4),
-        "reasoning": result.reasoning
+        "reasoning": result.reasoning,
     }
-    
+
     print(json.dumps(output, indent=2))
 
 
