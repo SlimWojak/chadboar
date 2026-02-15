@@ -321,11 +321,7 @@ async def _run_tgm_pipeline(client: NansenClient) -> tuple[list[dict[str, Any]],
         screener_data = await client.screen_tokens(
             chains=["solana"],
             timeframe="1h",
-            filters={
-                "min_smart_money_wallets": 1,
-                "max_market_cap_usd": 50_000_000,
-            },
-            order_by=[{"field": "smart_money_inflow_usd", "direction": "DESC"}],
+            order_by=[{"field": "volume", "direction": "DESC"}],
         )
         candidates = _parse_screener_candidates(screener_data)
         _log(f"Phase 1 done: {len(candidates)} candidates ({time.monotonic()-t1:.1f}s)")
@@ -333,17 +329,13 @@ async def _run_tgm_pipeline(client: NansenClient) -> tuple[list[dict[str, Any]],
         _log(f"Phase 1 FAILED: {e} ({time.monotonic()-t1:.1f}s)")
 
     if not candidates:
-        # 24h fallback with same filters
+        # 24h fallback
         _log("Screener 1h empty, trying 24h...")
         try:
             screener_data = await client.screen_tokens(
                 chains=["solana"],
                 timeframe="24h",
-                filters={
-                    "min_smart_money_wallets": 1,
-                    "max_market_cap_usd": 50_000_000,
-                },
-                order_by=[{"field": "smart_money_inflow_usd", "direction": "DESC"}],
+                order_by=[{"field": "volume", "direction": "DESC"}],
             )
             candidates = _parse_screener_candidates(screener_data)
             discovery_source = "screener-24h"
@@ -723,7 +715,13 @@ async def _fetch_dca_count(client: NansenClient, mint: str) -> int:
 
 
 def _parse_screener_candidates(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Parse Token Screener response into candidate signals."""
+    """Parse Token Screener response into candidate signals.
+
+    Client-side filters (Nansen screener doesn't support server-side):
+    - min 1 smart money wallet
+    - max $50M market cap
+    Sorted by smart money inflow descending.
+    """
     tokens = data.get("data", data.get("tokens", []))
     if not isinstance(tokens, list):
         return []
@@ -733,16 +731,24 @@ def _parse_screener_candidates(data: dict[str, Any]) -> list[dict[str, Any]]:
         mint = token.get("token_address", token.get("address", ""))
         if not mint:
             continue
+        wallet_count = int(token.get("smart_money_wallets", token.get("wallet_count", 0)))
+        mcap = float(token.get("market_cap", token.get("mc", 0)) or 0)
+        # Filter: at least 1 SM wallet, max $50M mcap (0 = unknown, allow through)
+        if wallet_count < 1:
+            continue
+        if mcap > 50_000_000:
+            continue
         signals.append({
             "token_mint": mint,
             "token_symbol": token.get("symbol", token.get("token_symbol", "UNKNOWN")),
-            "wallet_count": int(token.get("smart_money_wallets", token.get("wallet_count", 0))),
+            "wallet_count": wallet_count,
             "total_buy_usd": float(token.get("smart_money_inflow_usd", token.get("buy_volume_usd", 0))),
-            "confidence": "high" if int(token.get("smart_money_wallets", 0)) >= 5 else "medium",
+            "confidence": "high" if wallet_count >= 5 else "medium",
             "source": "nansen",
         })
 
-    signals.sort(key=lambda s: s["wallet_count"], reverse=True)
+    # Sort by SM inflow (what we wanted from order_by but can't server-side)
+    signals.sort(key=lambda s: s["total_buy_usd"], reverse=True)
     return signals[:10]
 
 
