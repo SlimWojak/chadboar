@@ -111,6 +111,56 @@ class MobulaClient:
                 })
         return tokens
 
+    def get_whale_transactions(self, wallet: str) -> list[dict[str, Any]]:
+        """Fallback: get wallet's recent Solana transactions to resolve tokens.
+
+        Used when portfolio API returns empty but networth shows accumulation.
+        Identifies tokens the whale is buying by scanning recent tx history.
+        """
+        url = f"{self.base_url}/wallet/transactions"
+        params = {
+            'wallet': wallet,
+            'blockchains': 'solana',
+            'limit': 50,
+        }
+        resp = requests.get(url, headers=self.headers, params=params, timeout=15)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        txs = data.get('data', data.get('transactions', []))
+        if not isinstance(txs, list):
+            return []
+
+        # Aggregate buy-side tokens from recent transactions
+        SOL_MINT = "So11111111111111111111111111111111111111112"
+        STABLES = {"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
+                    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"}  # USDT
+        token_buys: dict[str, dict[str, Any]] = {}
+
+        for tx in txs:
+            # Look for swap/transfer patterns
+            token_in = tx.get('token_in', tx.get('asset_in', {}))
+            token_out = tx.get('token_out', tx.get('asset_out', {}))
+
+            # Identify buys: spent SOL/stable, received token
+            in_addr = token_in.get('address', '') if isinstance(token_in, dict) else ''
+            out_addr = token_out.get('address', '') if isinstance(token_out, dict) else ''
+
+            if in_addr in (SOL_MINT, *STABLES) and out_addr and out_addr not in (SOL_MINT, *STABLES):
+                mint = out_addr
+                symbol = token_out.get('symbol', 'UNKNOWN') if isinstance(token_out, dict) else 'UNKNOWN'
+                value = float(token_out.get('amount_usd', token_out.get('value_usd', 0)) or 0)
+
+                if mint not in token_buys:
+                    token_buys[mint] = {'token_mint': mint, 'token_symbol': symbol, 'value_usd': 0.0, 'tx_count': 0}
+                token_buys[mint]['value_usd'] += value
+                token_buys[mint]['tx_count'] += 1
+
+        # Return tokens sorted by total buy value, minimum $500
+        results = [t for t in token_buys.values() if t['value_usd'] >= 500]
+        results.sort(key=lambda t: t['value_usd'], reverse=True)
+        return results[:5]
+
 
 async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
     """Query smart money signals using TGM pipeline with dex-trades fallback."""
@@ -266,11 +316,16 @@ async def _run_tgm_pipeline(client: NansenClient) -> tuple[list[dict[str, Any]],
     candidates: list[dict[str, Any]] = []
     discovery_source = "screener"
 
-    _log("Phase 1: Token Screener (1h)...")
+    _log("Phase 1: Token Screener (1h, filtered for early-stage)...")
     try:
         screener_data = await client.screen_tokens(
             chains=["solana"],
             timeframe="1h",
+            filters={
+                "min_smart_money_wallets": 1,
+                "max_market_cap_usd": 50_000_000,
+            },
+            order_by=[{"field": "smart_money_inflow_usd", "direction": "DESC"}],
         )
         candidates = _parse_screener_candidates(screener_data)
         _log(f"Phase 1 done: {len(candidates)} candidates ({time.monotonic()-t1:.1f}s)")
@@ -278,12 +333,17 @@ async def _run_tgm_pipeline(client: NansenClient) -> tuple[list[dict[str, Any]],
         _log(f"Phase 1 FAILED: {e} ({time.monotonic()-t1:.1f}s)")
 
     if not candidates:
-        # 24h fallback before dex-trades
+        # 24h fallback with same filters
         _log("Screener 1h empty, trying 24h...")
         try:
             screener_data = await client.screen_tokens(
                 chains=["solana"],
                 timeframe="24h",
+                filters={
+                    "min_smart_money_wallets": 1,
+                    "max_market_cap_usd": 50_000_000,
+                },
+                order_by=[{"field": "smart_money_inflow_usd", "direction": "DESC"}],
             )
             candidates = _parse_screener_candidates(screener_data)
             discovery_source = "screener-24h"
@@ -384,6 +444,7 @@ async def _run_mobula_scan(
     _log(f"Mobula networth done: {len(mobula_signals)} accumulating ({time.monotonic()-t0:.1f}s)")
 
     # Enrich accumulating whales with portfolio (token resolution)
+    # Fallback: if portfolio returns empty, try recent transactions
     if mobula_signals:
         t1 = time.monotonic()
         _log(f"Mobula: resolving tokens for {len(mobula_signals)} whales...")
@@ -396,6 +457,21 @@ async def _run_mobula_scan(
                 signal['top_tokens'] = portfolio
                 signal['token_mint'] = portfolio[0]['token_mint']
                 signal['token_symbol'] = portfolio[0]['token_symbol']
+            else:
+                # Fallback: scan recent transactions to resolve tokens
+                _log(f"Mobula: portfolio empty for {signal['wallet'][:12]}..., trying tx fallback")
+                tx_tokens = await asyncio.to_thread(
+                    mobula_client.get_whale_transactions, signal['wallet']
+                )
+                if tx_tokens:
+                    signal['top_tokens'] = tx_tokens
+                    signal['token_mint'] = tx_tokens[0]['token_mint']
+                    signal['token_symbol'] = tx_tokens[0]['token_symbol']
+                    signal['resolution'] = 'tx_fallback'
+                    _log(f"Mobula: tx fallback resolved {tx_tokens[0]['token_symbol']} "
+                         f"(${tx_tokens[0]['value_usd']:,.0f})")
+                else:
+                    _log(f"Mobula: tx fallback also empty for {signal['wallet'][:12]}...")
 
         portfolio_tasks = [_fetch_portfolio(s) for s in mobula_signals]
         await asyncio.gather(*portfolio_tasks, return_exceptions=True)

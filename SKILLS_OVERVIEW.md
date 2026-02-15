@@ -1,6 +1,6 @@
 # ChadBoar Skills Overview
 
-**Last Updated:** 2026-02-14
+**Last Updated:** 2026-02-15
 **Total Skills:** 8 (7 active + 1 whitelisted reference)
 
 ---
@@ -102,9 +102,14 @@ Cabals often launch tokens without social links (no Twitter, no Telegram, no web
 
 **Credits:** 1 Mobula credit per Pulse GET call (1/cycle).
 
-#### Phase 1: Discovery — Nansen Token Screener
+#### Phase 1: Discovery — Nansen Token Screener (Filtered)
 
-**Fallback Chain:** 1h screener → 24h screener → dex-trades
+**Filters (applied to both 1h and 24h):**
+- `min_smart_money_wallets: 1` — at least one whale buying
+- `max_market_cap_usd: 50,000,000` — exclude mega-caps/stables
+- `order_by: smart_money_inflow_usd DESC` — rank by whale buying pressure
+
+**Fallback Chain:** 1h screener (filtered) → 24h screener (filtered) → dex-trades
 - If 1h returns 0 candidates, retry with `timeframe="24h"` (`discovery_source: "screener-24h"`)
 - If 24h also empty, fall back to dex-trades (`discovery_source: "dex-trades"`)
 
@@ -125,6 +130,7 @@ Starts as `asyncio.create_task()` BEFORE Phase 1 (doesn't depend on candidates).
 #### Mobula Whale Scan (parallel with TGM)
 - 5 tracked whale wallets queried via `asyncio.to_thread()` + `asyncio.gather()` (parallel, not sequential)
 - Accumulating whales (accum_24h > $10k) enriched with `/wallet/portfolio` for token resolution
+- **Transaction fallback:** If portfolio returns empty (whale accumulating unlisted/new tokens), falls back to `/wallet/transactions` to identify buy-side tokens from recent tx history. Min $500 buy value to qualify.
 - Whale tokens enter scoring loop as `discovery_source: "mobula-whale"`
 
 **Enriched Output Fields (per token):**
@@ -194,26 +200,29 @@ python3 -m lib.skills.oracle_query --token <MINT>  # specific token (skips Pulse
 
 ---
 
-### 2. Narrative Hunter
-**Purpose:** Detect pre-pump narrative convergence from social + onchain signals  
-**When to Use:** Heartbeat step 6, or on-demand for sentiment analysis  
-**Data Sources:** X API (Twitter), Birdeye API  
-**Output:** Tokens with volume spikes, KOL mentions, narrative age  
+### 2. Narrative Hunter (On-Chain Volume Only)
+**Purpose:** Detect pre-pump volume anomalies from on-chain data
+**When to Use:** Heartbeat step 6, or on-demand for volume analysis
+**Data Sources:** Birdeye API only (X API disabled — not cost-justified)
+**Output:** Tokens with volume spikes, narrative age
 
 **Key Metrics:**
-- Volume spike multiple (1h vs 24h avg)
-- KOL detection (≥10k followers)
+- Volume spike multiple (1h vs 24h avg) from Birdeye token overview
 - Narrative age (time since first detection)
+
+**Not Available (X API disabled):**
+- KOL detection (≥10k followers) — always returns 0
+- X/Twitter mention count — always returns 0
+
+**Token Universe:** Uses Birdeye `/defi/tokenlist` sorted by `v24hChangePercent` DESC with `min_liquidity=5000`. This targets new/small-cap tokens with recent volume spikes instead of large-cap established tokens.
 
 **Thresholds:**
 - ≥5x volume spike → PRIMARY signal (permission gate eligible)
-- KOL mention → +10 pts bonus
 
 **Command:**
 ```bash
 python3 -m lib.skills.narrative_scan
 python3 -m lib.skills.narrative_scan --token <MINT>  # specific token
-python3 -m lib.skills.narrative_scan --topic "AI tokens"  # topic scan
 ```
 
 ---
@@ -438,10 +447,10 @@ cd /home/autistboar/chadboar && .venv/bin/python3 -m <module>
 
 ### API Dependencies
 - **Helius API:** Rug Warden (token metadata), Blind Executioner (RPC)
-- **Birdeye API:** Narrative Hunter (volume data), Rug Warden (security checks)
-- **Nansen API:** Smart Money Oracle (Token Screener, Flow Intelligence, Who Bought/Sold, Jupiter DCAs, Smart Money Holdings, dex-trades fallback)
-- **Mobula API:** Smart Money Oracle — whale networth tracking (`/wallet/history`), whale token resolution (`/wallet/portfolio`), Pulse pre-discovery (`/api/2/pulse` via `pulse-v2-api.mobula.io`). Startup plan: 125k credits/month.
-- **X API:** Narrative Hunter (social sentiment)
+- **Birdeye API:** Narrative Hunter (volume data via `/defi/tokenlist` sorted by v24hChangePercent), Rug Warden (security checks)
+- **Nansen API:** Smart Money Oracle (Token Screener with early-stage filters, Flow Intelligence, Who Bought/Sold, Jupiter DCAs, Smart Money Holdings, dex-trades fallback)
+- **Mobula API:** Smart Money Oracle — whale networth tracking (`/wallet/history`), whale token resolution (`/wallet/portfolio` + `/wallet/transactions` fallback), Pulse pre-discovery (`/api/2/pulse` via `pulse-v2-api.mobula.io`). Startup plan: 125k credits/month.
+- **X API:** DISABLED (not cost-justified for $1k experiment). KOL detection and social sentiment unavailable.
 - **Jito Block Engine:** Blind Executioner (MEV protection)
 
 ### Output Format
@@ -478,12 +487,14 @@ Heartbeat runner parses JSON to make decisions.
 - Ghost metadata (no socials + volume > $50k): +5 pts
 - Pro trader holdings > 10% at launch: +5 pts
 
-**Vetoes (5 total):**
+**Vetoes (4 total):**
 1. Rug Warden FAIL
 2. ≥3 dumper wallets
 3. Token <2min old
-4. Wash trading (≥10x volume + no KOL)
+4. ~~Wash trading (≥10x volume + no KOL)~~ → **Downgraded to −25 pts penalty** (X API disabled, kol_detected always false)
 5. Liquidity drop (TODO)
+
+**Note:** Former VETO 4 was downgraded because X API is disabled — KOL detection is unavailable, so every high-volume accumulation play would have been auto-vetoed. Now a −25 penalty instead (red flag `unsocialized_volume`).
 
 **Time Mismatch (B2):**  
 - Oracle + Narrative timestamps <5min apart → downgrade 1 tier

@@ -77,6 +77,25 @@ class BirdeyeClient:
         )
 
     @with_retry
+    async def get_new_pairs(self, limit: int = 20, min_liquidity: int = 5000) -> dict[str, Any]:
+        """Get recently active small-cap tokens sorted by volume change.
+
+        Uses /defi/tokenlist with v24hChangePercent sort to find tokens
+        with the biggest recent volume spikes — targets new/small-cap
+        tokens rather than established large-caps.
+        """
+        return await self._client.get(
+            "/defi/tokenlist",
+            params={
+                "sort_by": "v24hChangePercent",
+                "sort_type": "desc",
+                "min_liquidity": min_liquidity,
+                "limit": min(limit, 50),
+            },
+            cache_ttl=60,
+        )
+
+    @with_retry
     async def get_holder_count(self, mint: str) -> dict[str, Any]:
         """Get holder count and recent change."""
         return await self._client.get(

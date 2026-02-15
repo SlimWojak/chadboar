@@ -19,8 +19,8 @@ from urllib.parse import urlparse
 import httpx
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (override=True: prefer .env over stale inherited vars)
+load_dotenv(override=True)
 
 # INV-BRAVE-WHITELIST — Allowed domains for search results
 ALLOWED_DOMAINS = {

@@ -321,23 +321,11 @@ class ConvictionScorer:
                 play_type=play_type,
             )
 
-        # VETO 4: Volume spike >=10x with near-zero social — ACCUMULATION ONLY
-        # For graduation plays, high volume without KOL is normal (on-chain activity,
-        # not social media). Only suspicious for established tokens.
-        if (play_type == "accumulation"
-                and signals.narrative_volume_spike >= 10.0
-                and not signals.narrative_kol_detected):
-            return ConvictionScore(
-                ordering_score=0,
-                permission_score=0,
-                breakdown={},
-                red_flags={},
-                primary_sources=[],
-                recommendation="VETO",
-                position_size_sol=0.0,
-                reasoning=f"VETO: {signals.narrative_volume_spike:.0f}x volume spike with no social activity (wash trading)",
-                play_type=play_type,
-            )
+        # RED FLAG: Volume spike >=10x with near-zero social — ACCUMULATION ONLY
+        # Downgraded from VETO to -25 penalty: X API is disabled so kol_detected
+        # is always false. On-chain volume without social confirmation is suspicious
+        # but not an absolute block — Rug Warden is the safety gate.
+        # Penalty applied later in red flags section (see 'unsocialized_volume').
 
         # VETO 6: Graduation daily sublimit exceeded
         grad_max_daily = self.graduation_config.get('max_daily_plays', 3)
@@ -513,6 +501,19 @@ class ConvictionScorer:
             red_flags['exchange_inflow'] = -penalty
             permission_score -= penalty
             reasoning_parts.append(f"RED FLAG: Exchange inflow ${signals.exchange_outflow_usd:,.0f} — distribution pattern (-{penalty} pts)")
+
+        # RED FLAG 4b: Unsocialized Volume Spike (was VETO 4, downgraded to penalty)
+        # High volume without social confirmation — suspicious but not fatal.
+        if (play_type == "accumulation"
+                and signals.narrative_volume_spike >= 10.0
+                and not signals.narrative_kol_detected):
+            penalty = 25
+            red_flags['unsocialized_volume'] = -penalty
+            permission_score -= penalty
+            reasoning_parts.append(
+                f"RED FLAG: {signals.narrative_volume_spike:.0f}x volume spike "
+                f"with no social confirmation (-{penalty} pts)"
+            )
 
         # RED FLAG 5: S2 Divergence Damping (Oracle <-> Narrative mismatch)
         if (signals.smart_money_whales >= 2

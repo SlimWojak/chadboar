@@ -83,12 +83,14 @@ these are gateway suppression tokens that prevent delivery.
 - Review whale accumulation signals.
 - Extract: number of distinct whales accumulating per token.
 
-## 6. Narrative Hunter
+## 6. Narrative Hunter (On-Chain Volume Only)
 ```bash
 /home/autistboar/chadboar/boar -m lib.skills.narrative_scan
 ```
-- Review social + onchain momentum.
-- Extract: volume spike multiple, KOL detection, narrative age.
+- Review onchain volume momentum (X API disabled — no social/KOL data).
+- Uses Birdeye new/small-cap token list (sorted by 24h volume change %).
+- Extract: volume spike multiple, narrative age.
+- Note: `kol_detected` always false, `x_mentions_1h` always 0.
 
 ## 7. Position Watchdog (Exit Tier Logic)
 - For each open position in state.json:
@@ -272,5 +274,5 @@ Before sending your report via the message tool, verify:
 - [ ] If trade executed: autopsy bead written to `beads/`
 - [ ] If notable event: alert included in response text with tier prefix emoji
 - [ ] If dry-run cycle: `dry_run_cycles_completed` incremented
-- [ ] Chain bead written automatically (heartbeat_runner.py appends after state update)
+- [ ] Chain bead written automatically (heartbeat_runner.py appends after state update) — includes funnel metrics (nansen_raw/filtered, mobula_raw/resolved, pulse_raw/filtered, narrative_raw/with_spike, reached_scorer, scored_*)
 - [ ] Anchor fires automatically every 50 beads (no manual action needed)

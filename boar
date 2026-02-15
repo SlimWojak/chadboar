@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
 # Wrapper: avoids "cd && python" which Grok HTML-encodes as &amp;&amp;
 cd /home/autistboar/chadboar || exit 1
+# Source .env so all child processes inherit API keys (set -a = auto-export)
+set -a
+# shellcheck disable=SC1091
+source .env 2>/dev/null
+set +a
 exec .venv/bin/python3 "$@"

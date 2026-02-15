@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from lib.clients.birdeye import BirdeyeClient
-from lib.clients.x_api import XClient
 from lib.scoring import ConvictionScorer, SignalInput
 from lib.utils.narrative_tracker import NarrativeTracker
 from lib.utils.async_batch import batch_price_fetch
@@ -96,6 +95,23 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     dry_run = state.get("dry_run_mode", True)
     cycle_num = state.get("dry_run_cycles_completed", 0) + 1
     
+    # Funnel diagnostics — tracks signal flow for flight recorder
+    funnel = {
+        "nansen_raw": 0,
+        "nansen_filtered": 0,
+        "mobula_raw": 0,
+        "mobula_resolved": 0,
+        "pulse_raw": 0,
+        "pulse_filtered": 0,
+        "narrative_raw": 0,
+        "narrative_with_spike": 0,
+        "reached_scorer": 0,
+        "scored_discard": 0,
+        "scored_watchlist": 0,
+        "scored_execute": 0,
+        "scored_veto": 0,
+    }
+
     result = {
         "cycle": cycle_num,
         "timestamp": datetime.utcnow().isoformat(),
@@ -108,6 +124,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         "observe_only": False,
         "data_completeness": 1.0,
         "sources_failed": [],
+        "funnel": funnel,
     }
     
     # Check time budget before starting
@@ -231,28 +248,39 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         oracle_failed = True
         result["sources_failed"].append("oracle")
     
-    # Step 6: Narrative Hunter
+    # Funnel: oracle source counts
+    if not oracle_failed:
+        nansen_sigs = oracle_result.get("nansen_signals", [])
+        mobula_sigs = oracle_result.get("mobula_signals", [])
+        pulse_sigs = oracle_result.get("pulse_signals", [])
+        funnel["nansen_raw"] = len(nansen_sigs)
+        funnel["nansen_filtered"] = len([s for s in nansen_sigs if s.get("wallet_count", 0) >= 1])
+        funnel["mobula_raw"] = len(mobula_sigs)
+        funnel["mobula_resolved"] = len([s for s in mobula_sigs if s.get("token_mint")])
+        funnel["pulse_raw"] = len(pulse_sigs)
+        funnel["pulse_filtered"] = len([s for s in pulse_sigs if s.get("token_mint")])
+
+    # Step 6: Narrative Hunter (on-chain volume only — X API disabled)
     narrative_failed = False
     birdeye = BirdeyeClient()
-    x_client = XClient()
     narrative_tracker = NarrativeTracker()
-    
+
     try:
-        # Get trending tokens
-        trending = await birdeye.get_token_list_trending(limit=10)
-        tokens = trending.get("data", trending.get("items", []))
-        
+        # Get new/small-cap tokens instead of large-cap trending
+        new_pairs = await birdeye.get_new_pairs(limit=20)
+        tokens = new_pairs.get("data", new_pairs.get("items", []))
+
         narrative_signals = []
-        for token_data in (tokens[:5] if isinstance(tokens, list) else []):
-            mint = token_data.get("address", "")
+        for token_data in (tokens[:10] if isinstance(tokens, list) else []):
+            mint = token_data.get("address", token_data.get("baseAddress", ""))
             if not mint:
                 continue
-            
-            # Scan narrative for this token
-            signal = await scan_token_narrative(mint, birdeye, x_client, narrative_tracker)
+
+            # Scan narrative for this token (on-chain volume only)
+            signal = await scan_token_narrative(mint, birdeye, narrative_tracker)
             if signal:
                 narrative_signals.append(signal)
-        
+
         result["narrative_signals"] = narrative_signals
     except Exception as e:
         result["errors"].append(f"Narrative error: {e}")
@@ -261,8 +289,14 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         result["sources_failed"].append("narrative")
     finally:
         await birdeye.close()
-        await x_client.close()
     
+    # Funnel: narrative counts
+    funnel["narrative_raw"] = len(narrative_signals)
+    funnel["narrative_with_spike"] = len([
+        s for s in narrative_signals
+        if float(s.get("volume_vs_avg", "0x").replace("x", "")) >= 5.0
+    ])
+
     # PARTIAL DATA PENALTY (A2): Calculate data completeness
     sources_failed_count = len(result["sources_failed"])
     
@@ -311,6 +345,8 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     # Create new Birdeye client for red flag checks
     birdeye_red_flags = BirdeyeClient()
     
+    funnel["reached_scorer"] = len(all_mints)
+
     for mint in all_mints:
         # Gather inputs
         oracle_sig = next((s for s in oracle_signals if s["token_mint"] == mint), None)
@@ -513,6 +549,16 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
 
         result["opportunities"].append(opportunity)
 
+        # Funnel: track verdict counts
+        if score.recommendation == "VETO":
+            funnel["scored_veto"] += 1
+        elif score.recommendation == "DISCARD":
+            funnel["scored_discard"] += 1
+        elif score.recommendation == "WATCHLIST":
+            funnel["scored_watchlist"] += 1
+        elif score.recommendation == "AUTO_EXECUTE":
+            funnel["scored_execute"] += 1
+
         # Decision logic
         if score.recommendation == "VETO":
             result["decisions"].append(f"🐗 VETO: {mint[:8]} — {score.reasoning}")
@@ -570,6 +616,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             "observe_only": result["observe_only"],
             "data_completeness": result["data_completeness"],
             "state_hash": state_hash,
+            "funnel": funnel,
         })
     except Exception:
         pass  # Chain is best-effort
@@ -708,44 +755,32 @@ async def run_rug_warden(mint: str) -> str:
 async def scan_token_narrative(
     mint: str,
     birdeye: BirdeyeClient,
-    x_client: XClient,
     tracker: NarrativeTracker,
 ) -> dict[str, Any] | None:
-    """Scan single token for narrative signals."""
+    """Scan single token for narrative signals (on-chain volume only).
+
+    X API is disabled — KOL/social detection unavailable. Narrative
+    signal is purely volume-spike-based from Birdeye on-chain data.
+    """
     try:
         overview = await birdeye.get_token_overview(mint)
         data = overview.get("data", overview)
         symbol = data.get("symbol", "UNKNOWN")
-        
+
         volume_1h = float(data.get("v1hUSD", 0))
         volume_24h = float(data.get("v24hUSD", 0))
         avg_hourly = volume_24h / 24 if volume_24h > 0 else 0
         volume_ratio = round(volume_1h / avg_hourly, 1) if avg_hourly > 0 else 0
-        
+
         # Only track if volume spike detected
         if volume_ratio >= 5.0:
             tracker.record_detection(mint)
-        
-        x_data = await x_client.search_recent(f"${symbol} OR {symbol} solana", max_results=50)
-        tweets = x_data.get("data", [])
-        mention_count = len(tweets) if isinstance(tweets, list) else 0
-        
-        kol_count = 0
-        users = {}
-        for u in x_data.get("includes", {}).get("users", []):
-            users[u.get("id")] = u
-        if isinstance(tweets, list):
-            for tweet in tweets:
-                author = users.get(tweet.get("author_id", ""), {})
-                followers = author.get("public_metrics", {}).get("followers_count", 0)
-                if followers >= 10000:
-                    kol_count += 1
-        
+
         return {
             "token_mint": mint,
             "token_symbol": symbol,
-            "x_mentions_1h": mention_count,
-            "kol_mentions": kol_count,
+            "x_mentions_1h": 0,
+            "kol_mentions": 0,
             "volume_vs_avg": f"{volume_ratio}x",
         }
     except Exception:
