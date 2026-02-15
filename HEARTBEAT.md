@@ -46,6 +46,16 @@ these are gateway suppression tokens that prevent delivery.
 - If status is `COLLAPSING` → include in your report: "🟡 WARNING: Session context may be collapsing — {consecutive_short} consecutive short outputs. Consider session reset."
 - Continue the heartbeat cycle (this is a warning, not a halt).
 
+## 1c. Chain Verification (INV-CHAIN-VERIFY)
+- Automatic: `verify_on_boot()` runs in heartbeat_runner.py before state orientation.
+- Verifies local hash chain integrity from last anchor forward.
+- If `TAMPERED` → 🔴 CRITICAL alert sent to G via Telegram. Continue operating (availability over safety for MVP). G can halt via killswitch if warranted.
+- If `CLEAN` or `UNANCHORED` → proceed normally.
+- On-demand check:
+```bash
+/home/autistboar/chadboar/boar -m lib.skills.chain_status --verify
+```
+
 ## 2. State Orientation
 - Read `state/checkpoint.md` for strategic context from the last heartbeat.
 - Read `state/latest.md` for current positions and recent activity.
@@ -257,8 +267,10 @@ Without it, the next spawn starts cold. Write it EVERY cycle.
 Before sending your report via the message tool, verify:
 
 - [ ] `state/state.json` updated with latest portfolio numbers
-- [ ] `state/latest.md` regenerated from state.json
+- [ ] `state/latest.md` regenerated from state.json (includes chain health section)
 - [ ] `state/checkpoint.md` written with strategic context
 - [ ] If trade executed: autopsy bead written to `beads/`
 - [ ] If notable event: alert included in response text with tier prefix emoji
 - [ ] If dry-run cycle: `dry_run_cycles_completed` incremented
+- [ ] Chain bead written automatically (heartbeat_runner.py appends after state update)
+- [ ] Anchor fires automatically every 50 beads (no manual action needed)

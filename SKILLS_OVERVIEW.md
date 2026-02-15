@@ -521,6 +521,75 @@ Heartbeat runner parses JSON to make decisions.
 
 ---
 
+## Flight Recorder (Cognitive Chain)
+
+### Purpose
+Tamper-evident "black box" for every significant action Boar takes. Hash-chained beads with Solana on-chain anchoring provide detection + forensics + recovery if local state is tampered with, corrupted, or lost.
+
+**What this is:** Detection + forensics + recovery (the security camera).
+**What this is NOT:** Prevention (that's Blind KeyMan, Rug Warden, governance).
+
+### Architecture
+```
+Bead Events → ChainBead → SHA-256 Hash Chain (SQLite) → Merkle Root → Solana Memo Anchor
+                                                                          ↓
+Boot Verify ← local chain integrity check ← last anchor comparison ← on-chain root
+```
+
+### Chain Storage
+Separate `chain_beads` table in `edge.db` (not mixed with trade `beads` table). The chain needs strict sequential ordering; trade beads need vector search. Different concerns, different tables.
+
+### Bead Types and Triggers
+| Type | Trigger | Source |
+|------|---------|--------|
+| `heartbeat` | End of each heartbeat cycle | `heartbeat_runner.py` |
+| `trade_entry` | EdgeBank.write_bead() for entry | `bank.py` |
+| `trade_exit` | EdgeBank.write_bead() for exit | `bank.py` |
+| `anchor` | Auto-triggered every 50 beads | `bead_chain.py` |
+| `guard_alert` | Guard halt events | Guard modules |
+| `state_change` | Significant state mutations | State writes |
+
+### Hash Chain
+Each bead contains:
+- `seq`: Monotonic sequence number (auto-increment)
+- `bead_hash`: SHA-256 of canonical JSON payload + prev_hash + timestamp
+- `prev_hash`: Hash of previous bead ("0" * 64 for genesis)
+- `bead_type`: Event classification
+- `payload`: Event-specific data (flexible JSON)
+- `anchor_tx`: Solana tx signature if anchored
+
+Hash computation is deterministic: `SHA-256(canonical_json(payload) + prev_hash + timestamp)`.
+
+### Anchoring Mechanism
+- **Trigger:** Every 50 beads (ANCHOR_BATCH_SIZE), auto-triggered during `append_bead()`
+- **Method:** SPL Memo program on Solana mainnet
+- **Signing:** Via Blind KeyMan subprocess (same isolation model as trades)
+- **Pubkey:** Derived from signer subprocess in `--pubkey` mode (cached in memory)
+- **RPC:** Helius (primary), public Solana (fallback)
+- **Memo payload:** `{"v":1,"type":"boar_anchor","root":"<merkle_root>","range":[start,end],"n":count,"ts":"<ISO>"}`
+- **Cost:** ~0.000005 SOL per tx (~$0.0004), ~$0.03-0.06/month total
+- **Failure mode:** Best-effort — anchoring failure never blocks heartbeat
+
+### Boot Verification (Step 1c)
+Runs after zombie gateway check, before state orientation:
+1. Verify local hash chain integrity from last anchor forward
+2. Recompute Merkle root for anchored range
+3. Compare against stored anchor root
+4. If TAMPERED → 🔴 CRITICAL alert to G, continue operating
+5. If CLEAN → proceed normally
+6. If UNANCHORED → proceed normally (no anchors yet)
+
+**Tamper behavior:** Alert only, do NOT halt. G can manually halt via killswitch if warranted. Availability over safety for MVP.
+
+### Commands
+```bash
+python3 -m lib.skills.chain_status              # Summary
+python3 -m lib.skills.chain_status --verify      # Full chain verification
+python3 -m lib.skills.chain_status --recent 10   # Last 10 chain beads
+```
+
+---
+
 ## Future Enhancements
 
 **In Progress:**

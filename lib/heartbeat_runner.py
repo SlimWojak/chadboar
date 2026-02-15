@@ -117,6 +117,17 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         result["errors"].append(f"Time budget exhausted before start: {time_remaining():.1f}s remaining")
         return result
     
+    # Step 1c: Chain Verification (Flight Recorder integrity check)
+    try:
+        from lib.chain.verify import verify_on_boot, send_tamper_alert
+        chain_status = verify_on_boot()
+        result["chain_status"] = chain_status["status"]
+        if chain_status["status"] == "TAMPERED":
+            await send_tamper_alert(chain_status["details"])
+            result["errors"].append(f"CHAIN TAMPERED: {chain_status['details']}")
+    except Exception as e:
+        result["errors"].append(f"Chain verification error: {e}")
+
     # Step 7: Position Watchdog (runs before new signals to handle exits first)
     if time_remaining() < 10:
         result["timeout_triggered"] = True
@@ -511,12 +522,31 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     if dry_run:
         state["dry_run_cycles_completed"] = cycle_num
     state["last_heartbeat_time"] = datetime.utcnow().isoformat()
-    
+
     safe_write_json(state_path, state)
-    
+
+    # Append heartbeat chain bead (Flight Recorder)
+    try:
+        import hashlib
+        from lib.chain.bead_chain import append_bead as chain_append
+        state_json = json.dumps(state, sort_keys=True)
+        state_hash = hashlib.sha256(state_json.encode()).hexdigest()
+        chain_append("heartbeat", {
+            "cycle": cycle_num,
+            "opportunities": len(result["opportunities"]),
+            "decisions": len(result["decisions"]),
+            "exits": len(result["exits"]),
+            "errors": result["errors"],
+            "observe_only": result["observe_only"],
+            "data_completeness": result["data_completeness"],
+            "state_hash": state_hash,
+        })
+    except Exception:
+        pass  # Chain is best-effort
+
     result["state_updated"] = True
     result["next_cycle"] = cycle_num + 1
-    
+
     return result
 
 

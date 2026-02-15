@@ -21,4 +21,7 @@ Edge Bank — query similar historical patterns.
 ## self_repair
 Self-Repair — gateway diagnostics via Grok, whitelist commands, human-gate restarts.
 
+## chain_status
+Flight Recorder — tamper-evident hash chain health. Summary, full verification (`--verify`), recent beads (`--recent N`). Auto-verifies on boot (step 1c). Anchors Merkle roots to Solana via SPL Memo every 50 beads.
+
 See TOOLS.md for CLI usage. See SKILLS_OVERVIEW.md for detailed architecture.

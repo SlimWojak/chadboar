@@ -30,11 +30,12 @@ What this process NEVER DOES:
   - Accept any argument that could leak the key
   - Import any module that could exfiltrate data
 
-Usage (from the agent process via keychain.py):
-  echo '<unsigned_tx_base64>' | python3 -m lib.signer.signer
+Modes:
+  Sign:   echo '<unsigned_tx_base64>' | python3 -m lib.signer.signer
+  Pubkey: python3 -m lib.signer.signer --pubkey
 
 Exit codes:
-  0 = success (signed tx on stdout)
+  0 = success (signed tx or pubkey on stdout)
   1 = error (error message on stderr)
 """
 
@@ -77,6 +78,17 @@ def _sign_transaction(unsigned_tx_bytes: bytes, private_key_bytes: bytes) -> byt
     return bytes(signed_tx)
 
 
+def _derive_pubkey(private_key_bytes: bytes) -> str:
+    """Derive the public key (base58) from a private key.
+
+    Public key is NOT secret material — safe to output.
+    Uses same Keypair derivation as signing.
+    """
+    from solders.keypair import Keypair
+    keypair = Keypair.from_bytes(private_key_bytes)
+    return str(keypair.pubkey())
+
+
 def main() -> None:
     """Signer entry point. Reads stdin, signs, writes stdout."""
     # SECURITY: Read private key from THIS process's environment ONLY
@@ -84,6 +96,20 @@ def main() -> None:
     if not key_b64:
         print("ERROR: SIGNER_PRIVATE_KEY not set in signer environment", file=sys.stderr)
         sys.exit(1)
+
+    # --pubkey mode: derive and output public key, then exit
+    if "--pubkey" in sys.argv:
+        try:
+            private_key_bytes = base64.b64decode(key_b64)
+            pubkey = _derive_pubkey(private_key_bytes)
+            sys.stdout.write(pubkey)
+            sys.stdout.flush()
+            private_key_bytes = b""  # noqa: F841
+            key_b64 = ""  # noqa: F841
+            sys.exit(0)
+        except Exception as e:
+            print(f"ERROR: Pubkey derivation failed: {e}", file=sys.stderr)
+            sys.exit(1)
 
     # Read unsigned transaction from stdin (base64 encoded)
     unsigned_b64 = sys.stdin.read().strip()

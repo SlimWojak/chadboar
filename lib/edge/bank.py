@@ -154,6 +154,23 @@ class EdgeBank:
         )
         conn.commit()
         conn.close()
+
+        # Append to flight recorder chain (tamper-evident hash chain)
+        try:
+            from lib.chain.bead_chain import append_bead as chain_append
+            chain_type = "trade_entry" if bead.bead_type == "entry" else "trade_exit"
+            chain_append(chain_type, {
+                "bead_id": bead.bead_id,
+                "token_symbol": bead.token_symbol,
+                "direction": bead.direction,
+                "amount_sol": bead.amount_sol,
+                "signals": bead.signals,
+                "outcome": bead.outcome,
+                "pnl_pct": bead.pnl_pct,
+            })
+        except Exception:
+            pass  # Chain is best-effort — never block trade bead writes
+
         return bead.bead_id
 
     def query_similar(self, context: str, top_k: int = 3) -> list[dict[str, Any]]:

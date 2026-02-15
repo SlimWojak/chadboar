@@ -63,6 +63,11 @@ Violation of any invariant is a system failure.
    docs.nansen.ai, github.com, docs.jup.ag, docs.jito.network, solana.com,
    stackoverflow.com. No social media, forums, or general web.
 
+9. **INV-CHAIN-VERIFY**: On every boot, verify bead chain integrity from last anchor.
+   If chain is tampered (hash mismatch), send 🔴 CRITICAL alert to G with details.
+   Continue operating (availability over safety for MVP). G can halt via killswitch
+   if warranted.
+
 ## Decision Framework
 
 - **Signal convergence**: whale accumulation + narrative momentum + volume anomaly
@@ -90,6 +95,10 @@ Violation of any invariant is a system failure.
 ## Boot Sequence (Every Spawn)
 
 1. Read `config/firehose.yaml` + `SKILLS/*.md` — API config + skills orient
+1c. Chain Verification (after zombie gateway check)
+    - Verify local hash chain integrity from last anchor forward
+    - Compare last anchor against stored Merkle root
+    - If TAMPERED → 🔴 CRITICAL alert to G (INV-CHAIN-VERIFY)
 2. Read `state/checkpoint.md` — strategic context from last heartbeat
 3. Read `state/latest.md` — portfolio numbers
 4. If heartbeat: follow `HEARTBEAT.md` strictly

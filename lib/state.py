@@ -103,6 +103,26 @@ def update_latest(state: State) -> None:
         else 0.0
     )
 
+    # Chain health
+    chain_text = ""
+    try:
+        from lib.chain.bead_chain import get_chain_stats
+        chain = get_chain_stats()
+        chain_status = "CLEAN"
+        anchor_info = "None"
+        if chain["last_anchor"]:
+            tx = chain["last_anchor"]["tx_signature"]
+            anchor_info = f"tx {tx[:12]}... (seq {chain['last_anchor']['seq']})"
+        chain_text = f"""
+## Chain Health
+- Status: {chain_status}
+- Chain length: {chain['chain_length']:,} beads
+- Last anchor: {anchor_info}
+- Beads since anchor: {chain['beads_since_anchor']}
+"""
+    except Exception:
+        chain_text = ""
+
     content = f"""# ChadBoar — Latest State
 Updated: {now}
 
@@ -125,7 +145,7 @@ Updated: {now}
 - Total trades: {state.total_trades} (W: {state.total_wins} / L: {state.total_losses})
 - Last trade: {state.last_trade_time or "Never"}
 - Last heartbeat: {state.last_heartbeat_time or "Never"}
-"""
+{chain_text}"""
     LATEST_PATH.parent.mkdir(parents=True, exist_ok=True)
     LATEST_PATH.write_text(content)
 

@@ -154,6 +154,63 @@ def sign_transaction(unsigned_tx_base64: str) -> str:
     return signed_b64
 
 
+def get_public_key() -> str:
+    """Derive the wallet public key via the signer subprocess in --pubkey mode.
+
+    Spawns the signer with --pubkey flag. The signer derives the public key
+    from the private key and outputs it on stdout. Same isolation model:
+    minimal env, subprocess, no key in agent memory.
+
+    Public key is NOT secret material — does not violate INV-BLIND-KEY.
+
+    Returns:
+        Base58-encoded Solana public key string.
+
+    Raises:
+        SignerError: If derivation fails.
+    """
+    signer_key = _get_signer_key()
+
+    signer_env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/usr/local/bin"),
+        "PYTHONPATH": str(WORKSPACE),
+        "SIGNER_PRIVATE_KEY": signer_key,
+        "HOME": os.environ.get("HOME", ""),
+    }
+
+    venv = os.environ.get("VIRTUAL_ENV", "")
+    if venv:
+        signer_env["VIRTUAL_ENV"] = venv
+        signer_env["PATH"] = f"{venv}/bin:{signer_env['PATH']}"
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(SIGNER_SCRIPT), "--pubkey"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=signer_env,
+            cwd=str(WORKSPACE),
+        )
+    except subprocess.TimeoutExpired:
+        raise SignerError("Signer subprocess timed out (10s) in --pubkey mode")
+    except Exception as e:
+        raise SignerError(f"Failed to spawn signer subprocess for pubkey: {e}")
+    finally:
+        signer_key = ""  # noqa: F841
+        signer_env.clear()
+
+    if result.returncode != 0:
+        error_msg = result.stderr.strip() if result.stderr else "Unknown signer error"
+        raise SignerError(f"Pubkey derivation failed: {error_msg}")
+
+    pubkey = result.stdout.strip()
+    if not pubkey:
+        raise SignerError("Signer returned empty pubkey")
+
+    return pubkey
+
+
 def verify_isolation() -> dict[str, Any]:
     """Verify that the agent process does NOT have signer key in its environment.
 
