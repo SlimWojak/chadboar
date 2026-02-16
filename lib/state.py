@@ -70,10 +70,18 @@ class State(BaseModel):
 
 
 def load_state() -> State:
-    """Load state from disk. Returns default state if file doesn't exist."""
+    """Load state from disk. Returns default state if file doesn't exist or is corrupted."""
     if STATE_PATH.exists():
-        data = json.loads(STATE_PATH.read_text())
-        return State(**data)
+        try:
+            data = json.loads(STATE_PATH.read_text())
+            return State(**data)
+        except (json.JSONDecodeError, ValueError) as e:
+            import sys
+            print(
+                f"[state] WARNING: Failed to parse {STATE_PATH}: {e}. "
+                f"Using default state. File will be overwritten on next save.",
+                file=sys.stderr,
+            )
     return State()
 
 

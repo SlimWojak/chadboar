@@ -35,6 +35,7 @@ class SignalInput:
     pulse_sniper_pct: float = 0.0            # Sniper holdings % (red flag > 30%)
     pulse_pro_trader_pct: float = 0.0        # Pro trader + smart trader holdings %
     pulse_deployer_migrations: int = 0       # Deployer's prior migrations (rug risk > 3)
+    pulse_stage: str = ""                     # "bonded" | "bonding" | "" (from Pulse)
 
 
 @dataclass
@@ -231,6 +232,13 @@ class ConvictionScorer:
             score += 5
             breakdown_extra['pulse_clean_holders'] = 5
             parts.append("clean holders")
+
+        # Bonded stage bonus (freshly graduated from PumpFun → Raydium)
+        bonded_bonus = self.graduation_config.get('bonded_stage_bonus', 5)
+        if signals.pulse_stage == "bonded" and bonded_bonus > 0:
+            score += bonded_bonus
+            breakdown_extra['pulse_bonded_bonus'] = bonded_bonus
+            parts.append(f"bonded +{bonded_bonus}")
 
         score = min(score, max_points)
         reasoning = f"Pulse: {', '.join(parts)}" if parts else "Pulse: no quality signals"
@@ -649,6 +657,7 @@ def main():
     parser.add_argument("--pulse-sniper", type=float, default=0.0, help="Pulse sniper %")
     parser.add_argument("--pulse-pro", type=float, default=0.0, help="Pulse pro trader %")
     parser.add_argument("--pulse-deployer", type=int, default=0, help="Deployer migrations")
+    parser.add_argument("--pulse-stage", default="", help="Pulse stage: bonded or bonding")
 
     args = parser.parse_args()
 
@@ -669,6 +678,7 @@ def main():
         pulse_sniper_pct=args.pulse_sniper,
         pulse_pro_trader_pct=args.pulse_pro,
         pulse_deployer_migrations=args.pulse_deployer,
+        pulse_stage=args.pulse_stage,
     )
 
     scorer = ConvictionScorer()

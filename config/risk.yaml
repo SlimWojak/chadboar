@@ -37,7 +37,7 @@ conviction:
   # Thresholds
   thresholds:
     auto_execute: 85           # ≥85: accumulation auto-execute
-    auto_execute_graduation: 70  # ≥70: graduation auto-execute (lower data = lower bar)
+    auto_execute_graduation: 65  # ≥65: graduation auto-execute (tuned for 3-min scanner)
     watchlist: 60              # 60+: watchlist, alert G with breakdown
     discard: 60                # <60: discard, no alert
 
@@ -48,13 +48,14 @@ conviction:
   graduation:
     max_position_usd: 50       # Hard cap per graduation trade (within INV-HUMAN-GATE-100)
     max_daily_plays: 3         # Max graduation trades per day (concentrated risk guardrail)
+    bonded_stage_bonus: 5      # Extra points for freshly graduated (bonded) tokens
 
   # Position sizing parameters
   sizing:
     base_multiplier: 0.01      # (score/100) × (pot × 0.01)
     # volatility_factor calculated dynamically, defaults to 1.0
 
-# Exit tiers (applied in watchdog step)
+# Exit tiers (applied in watchdog step) — ACCUMULATION default
 exits:
   take_profit:
     tier_1_pct: 50             # Exit 50% position at 2x
@@ -62,11 +63,25 @@ exits:
     tier_2_pct: 30             # Exit 30% position at 5x
     tier_2_multiple: 5.0
     trailing_stop_pct: 20      # Trail remainder at 20% below peak
-  
+
   stop_loss_pct: 20            # Exit 100% at -20% (unchanged from trade.stop_loss_pct)
-  
+
   time_decay:
     no_momentum_minutes: 60    # If no price movement after 60min → exit
+
+# Exit tiers — GRADUATION speed plays (tighter, faster)
+exits_graduation:
+  take_profit:
+    tier_1_pct: 50             # Exit 50% at 2x (same as accumulation)
+    tier_1_multiple: 2.0
+    tier_2_pct: 30             # Exit 30% at 3x (tighter than 5x — take profit faster)
+    tier_2_multiple: 3.0
+    trailing_stop_pct: 30      # Wider trail — graduation moves are volatile
+
+  stop_loss_pct: 25            # Wider stop — more noise in early graduation plays
+
+  time_decay:
+    no_momentum_minutes: 30    # If no move in 30min, the graduation play is done
 
 # Rug Warden thresholds
 rug_warden:
