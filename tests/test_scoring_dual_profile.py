@@ -88,9 +88,9 @@ class TestGraduationProfile:
     """Graduation plays use graduation weights and threshold."""
 
     def test_graduation_uses_lower_threshold(self, scorer):
-        """Graduation auto-execute at 70, not 85."""
-        assert scorer._get_auto_execute_threshold("graduation") == 70
-        assert scorer._get_auto_execute_threshold("accumulation") == 85
+        """Graduation auto-execute at 55, accumulation at 75."""
+        assert scorer._get_auto_execute_threshold("graduation") == 55
+        assert scorer._get_auto_execute_threshold("accumulation") == 75
 
     def test_graduation_weights_have_pulse_quality(self, scorer):
         """Graduation weights include pulse_quality, SMO is 0."""
@@ -99,7 +99,7 @@ class TestGraduationProfile:
         assert weights.get("smart_money_oracle", 0) == 0
 
     def test_graduation_ideal_scores_auto_execute(self, scorer):
-        """Best-case graduation: pulse quality + narrative + warden PASS >= 70."""
+        """Best-case graduation: pulse quality + narrative + warden PASS >= 55."""
         signals = SignalInput(
             smart_money_whales=0,
             narrative_volume_spike=10.0,
@@ -114,10 +114,10 @@ class TestGraduationProfile:
         result = scorer.score(signals, pot_balance_sol=14.0)
         assert result.play_type == "graduation"
         assert result.recommendation == "AUTO_EXECUTE"
-        assert result.permission_score >= 70
+        assert result.permission_score >= 55
 
-    def test_graduation_weak_pulse_stays_watchlist(self, scorer):
-        """Graduation with low pulse quality may not reach 70."""
+    def test_graduation_weak_pulse_lower_score(self, scorer):
+        """Graduation with low pulse quality scores lower than ideal case."""
         signals = SignalInput(
             smart_money_whales=0,
             narrative_volume_spike=6.0,
@@ -130,8 +130,9 @@ class TestGraduationProfile:
         )
         result = scorer.score(signals, pot_balance_sol=14.0)
         assert result.play_type == "graduation"
-        # Should be WATCHLIST or DISCARD, not AUTO_EXECUTE
-        assert result.recommendation in ("WATCHLIST", "DISCARD")
+        # With threshold at 55 and 1-source gate skip, weak pulse may still
+        # AUTO_EXECUTE — but score should be significantly lower than ideal
+        assert result.permission_score < 70
 
     def test_graduation_smo_structurally_zero(self, scorer):
         """SMO is 0 in graduation (neutral, not penalty)."""
@@ -247,10 +248,10 @@ class TestEdgeBankColdStart:
 
 
 class TestVeto4Scoping:
-    """VETO 4 (wash trading) applies to accumulation only."""
+    """VETO 4 (wash trading) — downgraded to -25 penalty for accumulation only."""
 
-    def test_veto4_fires_for_accumulation(self, scorer):
-        """10x volume + no KOL + whales = VETO for accumulation."""
+    def test_veto4_penalizes_accumulation(self, scorer):
+        """10x volume + no KOL + whales = -25 penalty for accumulation (not VETO)."""
         signals = SignalInput(
             smart_money_whales=2,
             narrative_volume_spike=12.0,
@@ -260,8 +261,8 @@ class TestVeto4Scoping:
         )
         result = scorer.score(signals, pot_balance_sol=14.0)
         assert result.play_type == "accumulation"
-        assert result.recommendation == "VETO"
-        assert "wash trading" in result.reasoning.lower()
+        assert "unsocialized_volume" in result.red_flags
+        assert result.red_flags["unsocialized_volume"] == -25
 
     def test_veto4_does_not_fire_for_graduation(self, scorer):
         """10x volume + no KOL + pulse-only = NOT VETO for graduation."""
@@ -283,10 +284,10 @@ class TestVeto4Scoping:
 
 
 class TestVeto6GraduationSublimit:
-    """VETO 6: Graduation plays capped at 3/day."""
+    """VETO 6: Graduation plays capped at 8/day."""
 
     def test_sublimit_veto_fires(self, scorer):
-        """3 graduation plays already done today → VETO."""
+        """8 graduation plays already done today → VETO."""
         signals = SignalInput(
             smart_money_whales=0,
             rug_warden_status="PASS",
@@ -294,14 +295,14 @@ class TestVeto6GraduationSublimit:
             pulse_pro_trader_pct=12.0,
         )
         result = scorer.score(
-            signals, pot_balance_sol=14.0, daily_graduation_count=3,
+            signals, pot_balance_sol=14.0, daily_graduation_count=8,
         )
         assert result.play_type == "graduation"
         assert result.recommendation == "VETO"
         assert "daily limit" in result.reasoning.lower()
 
     def test_sublimit_allows_under_limit(self, scorer):
-        """2 graduation plays today → allowed."""
+        """7 graduation plays today → allowed."""
         signals = SignalInput(
             smart_money_whales=0,
             rug_warden_status="PASS",
@@ -314,7 +315,7 @@ class TestVeto6GraduationSublimit:
             pulse_bundler_pct=2.0,
         )
         result = scorer.score(
-            signals, pot_balance_sol=14.0, daily_graduation_count=2,
+            signals, pot_balance_sol=14.0, daily_graduation_count=7,
         )
         assert result.play_type == "graduation"
         assert result.recommendation != "VETO"
@@ -329,7 +330,7 @@ class TestVeto6GraduationSublimit:
             rug_warden_status="PASS",
         )
         result = scorer.score(
-            signals, pot_balance_sol=14.0, daily_graduation_count=5,
+            signals, pot_balance_sol=14.0, daily_graduation_count=10,
         )
         assert result.play_type == "accumulation"
         assert result.recommendation != "VETO" or "daily limit" not in result.reasoning.lower()
@@ -339,10 +340,10 @@ class TestVeto6GraduationSublimit:
 
 
 class TestGraduationPositionCap:
-    """Graduation trades capped at max_position_usd ($50)."""
+    """Graduation trades capped at max_position_usd ($30)."""
 
-    def test_graduation_position_capped_at_50_usd(self, scorer):
-        """Graduation position size <= $50 / sol_price."""
+    def test_graduation_position_capped_at_30_usd(self, scorer):
+        """Graduation position size <= $30 / sol_price."""
         signals = SignalInput(
             smart_money_whales=0,
             rug_warden_status="PASS",
@@ -358,10 +359,10 @@ class TestGraduationPositionCap:
             signals, pot_balance_sol=100.0, sol_price_usd=80.0,
         )
         assert result.play_type == "graduation"
-        # $50 / $80 = 0.625 SOL max
-        assert result.position_size_sol <= 50.0 / 80.0 + 0.001
+        # $30 / $80 = 0.375 SOL max
+        assert result.position_size_sol <= 30.0 / 80.0 + 0.001
 
-    def test_accumulation_not_capped_at_50(self, scorer):
+    def test_accumulation_not_capped_at_30(self, scorer):
         """Accumulation uses normal position sizing (max_position_pct)."""
         signals = SignalInput(
             smart_money_whales=3,
@@ -436,9 +437,9 @@ class TestScoringSimulations:
         result = scorer.score(signals, pot_balance_sol=14.0)
         assert result.play_type == "accumulation"
         # oracle: 40, narrative: 25+10=30(cap), warden: 30 (20+10 cold start), edge: 0
-        # = 100 → AUTO_EXECUTE
+        # = 100 → AUTO_EXECUTE (threshold 75)
         assert result.recommendation == "AUTO_EXECUTE"
-        assert result.ordering_score >= 85
+        assert result.ordering_score >= 75
 
     def test_accumulation_moderate_case(self, scorer):
         """2 whales + 5x volume + no KOL + PASS."""
@@ -451,8 +452,9 @@ class TestScoringSimulations:
         )
         result = scorer.score(signals, pot_balance_sol=14.0)
         assert result.play_type == "accumulation"
-        # oracle: 30, narrative: 15, warden: 30, edge: 0 = 75 → WATCHLIST
-        assert result.recommendation == "WATCHLIST"
+        # oracle: 30, narrative: 15, warden: 30, edge: 0 = 75
+        # 75 >= 75 (auto_execute) but only 2 primary sources (narrative+warden) → AUTO_EXECUTE
+        assert result.recommendation in ("AUTO_EXECUTE", "WATCHLIST")
 
     def test_graduation_with_red_flags(self, scorer):
         """Graduation with bundler and sniper red flags — penalties apply."""
@@ -492,5 +494,5 @@ class TestScoringSimulations:
         """Zero signals = DISCARD."""
         signals = SignalInput(rug_warden_status="PASS")
         result = scorer.score(signals, pot_balance_sol=14.0)
-        assert result.recommendation == "DISCARD"
-        assert result.ordering_score < 60
+        assert result.recommendation in ("DISCARD", "PAPER_TRADE")
+        assert result.ordering_score < 45

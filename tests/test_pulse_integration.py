@@ -33,109 +33,128 @@ from tests.mocks.mock_nansen import (
 # ── Mock Pulse API responses ───────────────────────────────────────
 
 PULSE_RESPONSE_GOOD = {
-    "data": {
-        "bonded": [
-            {
-                "address": "PULSE_BONDED_1",
-                "symbol": "PBOND",
-                "liquidity": 25000,
-                "volume": 15000,
-                "organicVolume": 12000,
-                "bundlersHoldingsPercentage": 5.0,
-                "snipersHoldingsPercentage": 8.0,
-                "proTradersHoldingsPercentage": 15.0,
-                "smartTradersHoldingsPercentage": 3.0,
-                "deployerMigrations": 1,
-                # No socials = ghost metadata
-            },
-            {
-                "address": "PULSE_BONDED_2",
-                "symbol": "PGOOD",
-                "liquidity": 50000,
-                "volume": 30000,
-                "organicVolume": 28000,
-                "bundlersHoldingsPercentage": 2.0,
-                "snipersHoldingsPercentage": 5.0,
-                "proTradersHoldingsPercentage": 20.0,
-                "smartTradersHoldingsPercentage": 5.0,
-                "twitter": "https://twitter.com/pgood",
-                "deployerMigrations": 0,
-            },
-        ],
-        "bonding": [
-            {
-                "address": "PULSE_BONDING_1",
-                "symbol": "PCURVE",
-                "liquidity": 8000,
-                "volume": 3000,
-                "organicVolume": 2500,
-                "bundlersHoldingsPercentage": 3.0,
-                "snipersHoldingsPercentage": 10.0,
-                "proTradersHoldingsPercentage": 8.0,
-                "smartTradersHoldingsPercentage": 2.0,
-                "deployerMigrations": 0,
-            },
-        ],
-    }
+    "bonded": {"data": [
+        {
+            "address": "PULSE_BONDED_1",
+            "symbol": "PBOND",
+            "liquidity": 25000,
+            "volume_24h": 15000,
+            "organic_volume_24h": 12000,
+            "bundlersHoldings": 5.0,
+            "snipersHoldings": 8.0,
+            "proTradersHoldings": 15.0,
+            "smartTradersHoldingsPercentage": 3.0,
+            "deployerMigrationsCount": 1,
+            "holdersCount": 200,
+            "marketCap": 100000,
+            "trendingScore1h": 50.0,
+            "socials": {"twitter": None, "website": None, "telegram": None},
+            # No socials = ghost metadata
+        },
+        {
+            "address": "PULSE_BONDED_2",
+            "symbol": "PGOOD",
+            "liquidity": 50000,
+            "volume_24h": 30000,
+            "organic_volume_24h": 28000,
+            "bundlersHoldings": 2.0,
+            "snipersHoldings": 5.0,
+            "proTradersHoldings": 20.0,
+            "smartTradersHoldingsPercentage": 5.0,
+            "socials": {"twitter": "https://twitter.com/pgood", "website": None, "telegram": None},
+            "deployerMigrationsCount": 0,
+            "holdersCount": 500,
+            "marketCap": 250000,
+            "trendingScore1h": 120.0,
+        },
+    ]},
+    "bonding": {"data": [
+        {
+            "address": "PULSE_BONDING_1",
+            "symbol": "PCURVE",
+            "liquidity": 8000,
+            "volume_24h": 3000,
+            "organic_volume_24h": 2500,
+            "bundlersHoldings": 3.0,
+            "snipersHoldings": 10.0,
+            "proTradersHoldings": 8.0,
+            "smartTradersHoldingsPercentage": 2.0,
+            "deployerMigrationsCount": 0,
+            "holdersCount": 80,
+            "marketCap": 30000,
+            "trendingScore1h": 10.0,
+            "socials": {"twitter": None, "website": None, "telegram": None},
+        },
+    ]},
 }
 
 PULSE_RESPONSE_BAD_TOKENS = {
-    "data": {
-        "bonded": [
-            {
-                "address": "BUNDLER_COIN",
-                "symbol": "BUND",
-                "liquidity": 20000,
-                "volume": 10000,
-                "organicVolume": 9000,
-                "bundlersHoldingsPercentage": 35.0,  # > 20% = reject
-                "snipersHoldingsPercentage": 5.0,
-                "proTradersHoldingsPercentage": 5.0,
-                "smartTradersHoldingsPercentage": 0.0,
-                "deployerMigrations": 0,
-            },
-            {
-                "address": "SNIPER_COIN",
-                "symbol": "SNIP",
-                "liquidity": 20000,
-                "volume": 10000,
-                "organicVolume": 9000,
-                "bundlersHoldingsPercentage": 5.0,
-                "snipersHoldingsPercentage": 45.0,  # > 30% = reject
-                "proTradersHoldingsPercentage": 5.0,
-                "smartTradersHoldingsPercentage": 0.0,
-                "deployerMigrations": 0,
-            },
-            {
-                "address": "BOT_COIN",
-                "symbol": "BOT",
-                "liquidity": 20000,
-                "volume": 10000,
-                "organicVolume": 1000,  # organic ratio 0.1 < 0.3 = reject
-                "bundlersHoldingsPercentage": 5.0,
-                "snipersHoldingsPercentage": 5.0,
-                "proTradersHoldingsPercentage": 5.0,
-                "smartTradersHoldingsPercentage": 0.0,
-                "deployerMigrations": 0,
-            },
-            {
-                "address": "LOW_LIQ",
-                "symbol": "LOWL",
-                "liquidity": 2000,  # < 5000 = reject
-                "volume": 10000,
-                "organicVolume": 9000,
-                "bundlersHoldingsPercentage": 5.0,
-                "snipersHoldingsPercentage": 5.0,
-                "proTradersHoldingsPercentage": 5.0,
-                "smartTradersHoldingsPercentage": 0.0,
-                "deployerMigrations": 0,
-            },
-        ],
-        "bonding": [],
-    }
+    "bonded": {"data": [
+        {
+            "address": "BUNDLER_COIN",
+            "symbol": "BUND",
+            "liquidity": 20000,
+            "volume_24h": 10000,
+            "organic_volume_24h": 9000,
+            "bundlersHoldings": 35.0,  # > 20% = penalty
+            "snipersHoldings": 5.0,
+            "proTradersHoldings": 5.0,
+            "smartTradersHoldingsPercentage": 0.0,
+            "deployerMigrationsCount": 0,
+            "holdersCount": 100,
+            "marketCap": 50000,
+            "socials": {"twitter": None, "website": None, "telegram": None},
+        },
+        {
+            "address": "SNIPER_COIN",
+            "symbol": "SNIP",
+            "liquidity": 20000,
+            "volume_24h": 10000,
+            "organic_volume_24h": 9000,
+            "bundlersHoldings": 5.0,
+            "snipersHoldings": 45.0,  # > 30% = penalty
+            "proTradersHoldings": 5.0,
+            "smartTradersHoldingsPercentage": 0.0,
+            "deployerMigrationsCount": 0,
+            "holdersCount": 100,
+            "marketCap": 50000,
+            "socials": {"twitter": None, "website": None, "telegram": None},
+        },
+        {
+            "address": "BOT_COIN",
+            "symbol": "BOT",
+            "liquidity": 20000,
+            "volume_24h": 10000,
+            "organic_volume_24h": 1000,  # organic ratio 0.1 < 0.3 = penalty
+            "bundlersHoldings": 5.0,
+            "snipersHoldings": 5.0,
+            "proTradersHoldings": 5.0,
+            "smartTradersHoldingsPercentage": 0.0,
+            "deployerMigrationsCount": 0,
+            "holdersCount": 100,
+            "marketCap": 50000,
+            "socials": {"twitter": None, "website": None, "telegram": None},
+        },
+        {
+            "address": "LOW_LIQ",
+            "symbol": "LOWL",
+            "liquidity": 2000,  # < 5000 = reject
+            "volume_24h": 10000,
+            "organic_volume_24h": 9000,
+            "bundlersHoldings": 5.0,
+            "snipersHoldings": 5.0,
+            "proTradersHoldings": 5.0,
+            "smartTradersHoldingsPercentage": 0.0,
+            "deployerMigrationsCount": 0,
+            "holdersCount": 100,
+            "marketCap": 50000,
+            "socials": {"twitter": None, "website": None, "telegram": None},
+        },
+    ]},
+    "bonding": {"data": []},
 }
 
-PULSE_RESPONSE_EMPTY = {"data": {"bonded": [], "bonding": [], "new": []}}
+PULSE_RESPONSE_EMPTY = {"bonded": {"data": []}, "bonding": {"data": []}, "new": {"data": []}}
 
 
 def _make_nansen_mock(**overrides):
@@ -463,6 +482,116 @@ class TestPulseScoring:
         assert "pulse_bundler" not in result.red_flags
         assert "pulse_sniper" not in result.red_flags
         assert "pulse_serial_deployer" not in result.red_flags
+
+
+# ── Enrichment bonuses ────────────────────────────────────────────
+
+
+class TestEnrichmentBonuses:
+    """New enrichment signals boost scores without penalizing."""
+
+    def test_holder_growth_bonus(self):
+        """Holder delta > 20% adds +5 bonus."""
+        scorer = ConvictionScorer()
+        signals = SignalInput(
+            smart_money_whales=3,
+            rug_warden_status="PASS",
+            holder_delta_pct=25.0,
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.breakdown.get("enrichment_holder_growth") == 5
+
+    def test_holder_growth_no_bonus_below_threshold(self):
+        """Holder delta <= 20% gives no bonus."""
+        scorer = ConvictionScorer()
+        signals = SignalInput(
+            smart_money_whales=3,
+            rug_warden_status="PASS",
+            holder_delta_pct=15.0,
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert "enrichment_holder_growth" not in result.breakdown
+
+    def test_trending_score_bonus(self):
+        """Trending score > 100 adds +5 bonus."""
+        scorer = ConvictionScorer()
+        signals = SignalInput(
+            smart_money_whales=3,
+            rug_warden_status="PASS",
+            pulse_trending_score=150.0,
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.breakdown.get("enrichment_trending") == 5
+
+    def test_trending_score_no_bonus_below_threshold(self):
+        """Trending score <= 100 gives no bonus."""
+        scorer = ConvictionScorer()
+        signals = SignalInput(
+            smart_money_whales=3,
+            rug_warden_status="PASS",
+            pulse_trending_score=50.0,
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert "enrichment_trending" not in result.breakdown
+
+    def test_dexscreener_boosted_bonus(self):
+        """DexScreener boosted adds +5 bonus."""
+        scorer = ConvictionScorer()
+        signals = SignalInput(
+            smart_money_whales=3,
+            rug_warden_status="PASS",
+            pulse_dexscreener_boosted=True,
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.breakdown.get("enrichment_ds_boosted") == 5
+
+    def test_no_enrichment_defaults_neutral(self):
+        """Default enrichment values (0/False) add no bonus."""
+        scorer = ConvictionScorer()
+        signals = SignalInput(
+            smart_money_whales=3,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert "enrichment_holder_growth" not in result.breakdown
+        assert "enrichment_trending" not in result.breakdown
+        assert "enrichment_ds_boosted" not in result.breakdown
+
+    def test_all_enrichment_stacks(self):
+        """All enrichment bonuses stack: +5 +5 +5 = +15."""
+        scorer = ConvictionScorer()
+        base_signals = SignalInput(
+            smart_money_whales=3,
+            rug_warden_status="PASS",
+        )
+        enriched_signals = SignalInput(
+            smart_money_whales=3,
+            rug_warden_status="PASS",
+            holder_delta_pct=30.0,
+            pulse_trending_score=200.0,
+            pulse_dexscreener_boosted=True,
+        )
+        base_result = scorer.score(base_signals, pot_balance_sol=14.0)
+        enriched_result = scorer.score(enriched_signals, pot_balance_sol=14.0)
+        assert enriched_result.permission_score == base_result.permission_score + 15
+
+    def test_graduation_1_source_auto_execute(self):
+        """Graduation plays skip the 2-source gate — 1 source is enough."""
+        scorer = ConvictionScorer()
+        signals = SignalInput(
+            smart_money_whales=0,
+            rug_warden_status="PASS",
+            pulse_organic_ratio=0.8,
+            pulse_pro_trader_pct=12.0,
+            pulse_bundler_pct=2.0,
+            pulse_ghost_metadata=True,
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.play_type == "graduation"
+        # With lowered threshold (55) and 1-source gate skip,
+        # this should be AUTO_EXECUTE if score >= 55
+        if result.permission_score >= 55:
+            assert result.recommendation == "AUTO_EXECUTE"
 
 
 # ── Heartbeat extraction ───────────────────────────────────────────

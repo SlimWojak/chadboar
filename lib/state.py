@@ -31,6 +31,9 @@ class Position(BaseModel):
     pnl_pct: float = 0.0
     thesis: str = ""
     signals: list[str] = Field(default_factory=list)
+    play_type: str = "accumulation"
+    entry_market_cap_usd: float = 0.0
+    entry_liquidity_usd: float = 0.0
 
 
 class State(BaseModel):

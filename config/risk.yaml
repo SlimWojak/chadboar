@@ -34,21 +34,21 @@ conviction:
     smart_money_oracle: 0      # Structurally unavailable for new tokens (neutral, not penalty)
     edge_bank: 10              # Same as accumulation (0 until 10+ beads, redistributed to warden)
 
-  # Thresholds
+  # Thresholds (tuned for tiny-cap scalps — let the boar trade and learn)
   thresholds:
-    auto_execute: 85           # ≥85: accumulation auto-execute
-    auto_execute_graduation: 65  # ≥65: graduation auto-execute (tuned for 3-min scanner)
-    watchlist: 60              # 60+: watchlist, alert G with breakdown
-    paper_trade: 40            # 40-59: paper trade (phantom entry, track PnL, write bead)
-    discard: 40                # <40: discard, no alert
+    auto_execute: 75           # ≥75: accumulation auto-execute (was 85 — too high, nothing trades)
+    auto_execute_graduation: 55  # ≥55: graduation auto-execute (was 65 — Pulse tokens rarely have pro traders)
+    watchlist: 45              # 45+: watchlist (was 60)
+    paper_trade: 30            # 30-44: paper trade (was 40)
+    discard: 30                # <30: discard, no alert
 
   # Edge bank cold start: disabled until this many beads exist
   edge_bank_min_beads: 10      # Below this, edge_bank points redistributed to rug_warden
 
-  # Graduation play limits
+  # Graduation play limits (smaller bets × more trades = more beads = faster learning)
   graduation:
-    max_position_usd: 50       # Hard cap per graduation trade (within INV-HUMAN-GATE-100)
-    max_daily_plays: 3         # Max graduation trades per day (concentrated risk guardrail)
+    max_position_usd: 30       # Hard cap per graduation trade (was 50 — smaller bets, more swings)
+    max_daily_plays: 8         # Max graduation trades per day (was 3 — let the boar trade and learn)
     bonded_stage_bonus: 5      # Extra points for freshly graduated (bonded) tokens
 
   # Position sizing parameters

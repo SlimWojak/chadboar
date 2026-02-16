@@ -24,9 +24,54 @@ from lib.utils.file_lock import safe_read_json, safe_write_json
 from lib.utils.red_flags import check_concentrated_volume
 from lib.skills.warden_check import check_token
 from lib.skills.oracle_query import query_oracle, _empty_flow_intel, _empty_buyer_depth
+from lib.skills.paper_trade import _load_trades as _load_paper_trades
 from lib.llm_utils import call_grok
 
 import httpx
+
+
+def build_health_line(result: dict[str, Any]) -> str:
+    """Build per-source diagnostic line for heartbeat messages.
+
+    Format: 📡 Nan:{cand}/{raw} | Bird:{spike}/{status} | DexS:{filt}/{raw} | Whl:{active}/{total} | Ppr:{open}
+    DexS/Pls label is dynamic based on which pulse source was used.
+    """
+    oh = result.get("oracle_health", {})
+    funnel = result.get("funnel", {})
+
+    # Nansen: candidates / raw trades (or ERR)
+    if oh.get("nansen_error"):
+        nan_part = "Nan:0/ERR"
+    else:
+        nan_cand = oh.get("nansen_candidates", funnel.get("nansen_filtered", 0))
+        nan_raw = oh.get("nansen_raw_trades", funnel.get("nansen_raw", 0))
+        nan_part = f"Nan:{nan_cand}/{nan_raw}"
+
+    # Birdeye: narrative spike count / status
+    birdeye_status = result.get("birdeye_status", "OK")
+    spike_count = funnel.get("narrative_with_spike", 0)
+    bird_part = f"Bird:{spike_count}/{birdeye_status}"
+
+    # Pulse/DexScreener: filtered / raw (dynamic label)
+    pulse_source = oh.get("pulse_source", "dexscreener")
+    pulse_label = "DexS" if pulse_source == "dexscreener" else "Pls"
+    if oh.get("pulse_error") and not oh.get("pulse_filtered"):
+        pulse_part = f"{pulse_label}:0/ERR"
+    else:
+        p_filt = oh.get("pulse_filtered", funnel.get("pulse_filtered", 0))
+        p_raw = oh.get("pulse_raw", funnel.get("pulse_raw", 0))
+        pulse_part = f"{pulse_label}:{p_filt}/{p_raw}"
+
+    # Whale: active / total
+    whl_active = oh.get("whale_active", 0)
+    whl_total = oh.get("whale_total", 0)
+    whl_part = f"Whl:{whl_active}/{whl_total}"
+
+    # Paper trades: open count
+    paper_open = result.get("paper_open", 0)
+    ppr_part = f"Ppr:{paper_open}"
+
+    return f"📡 {nan_part} | {bird_part} | {pulse_part} | {whl_part} | {ppr_part}"
 
 
 async def _send_s5_alert(
@@ -188,6 +233,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             result["holdings_delta"] = oracle_result.get("holdings_delta", [])
             result["phase_timing"] = oracle_result.get("phase_timing", {})
             result["oracle_diagnostics"] = oracle_result.get("diagnostics", [])
+            result["oracle_health"] = oracle_result.get("source_health", {})
 
             # Extract Mobula whale token candidates into scoring loop
             mobula_signals = oracle_result.get("mobula_signals", [])
@@ -264,6 +310,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     narrative_failed = False
     birdeye = BirdeyeClient()
     narrative_tracker = NarrativeTracker()
+    birdeye_status = "OK"
 
     try:
         # Get new/small-cap tokens instead of large-cap trending
@@ -282,13 +329,21 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                 narrative_signals.append(signal)
 
         result["narrative_signals"] = narrative_signals
+    except httpx.HTTPStatusError as e:
+        birdeye_status = str(e.response.status_code)
+        result["errors"].append(f"Narrative error: {e}")
+        narrative_signals = []
+        narrative_failed = True
+        result["sources_failed"].append("narrative")
     except Exception as e:
+        birdeye_status = "ERR"
         result["errors"].append(f"Narrative error: {e}")
         narrative_signals = []
         narrative_failed = True
         result["sources_failed"].append("narrative")
     finally:
         await birdeye.close()
+    result["birdeye_status"] = birdeye_status
     
     # Funnel: narrative counts
     funnel["narrative_raw"] = len(narrative_signals)
@@ -306,6 +361,11 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         result["data_completeness"] = 0.0
         result["decisions"].append("OBSERVE-ONLY MODE: ≥2 primary sources failed (oracle, narrative)")
         # Skip entry logic, return early after watchdog
+        try:
+            result["paper_open"] = len([t for t in _load_paper_trades() if not t.get("closed")])
+        except Exception:
+            result["paper_open"] = 0
+        result["health_line"] = build_health_line(result)
         return result
     elif oracle_failed:
         # Oracle missing → 0.7x penalty (30% reduction)
@@ -408,6 +468,20 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         pulse_sniper = float((oracle_sig or {}).get("pulse_sniper_pct", 0.0))
         pulse_pro = float((oracle_sig or {}).get("pulse_pro_trader_pct", 0.0))
         pulse_deployer = int((oracle_sig or {}).get("pulse_deployer_migrations", 0))
+        pulse_trending = float((oracle_sig or {}).get("pulse_trending_score", 0.0))
+        pulse_ds_boosted = bool((oracle_sig or {}).get("pulse_dexscreener_boosted", False))
+        market_cap = float((oracle_sig or {}).get("market_cap_usd", 0.0))
+
+        # Enrichment: Birdeye holder delta (single call per candidate, well within rate limits)
+        holder_delta = 0.0
+        try:
+            holder_data = await birdeye_red_flags.get_holder_count(mint)
+            h_data = holder_data.get("data", holder_data)
+            if isinstance(h_data, dict):
+                holder_delta = float(h_data.get("holder_change_24h_percent",
+                                     h_data.get("holderChangePercent", 0)))
+        except Exception as e:
+            result["errors"].append(f"Holder delta fetch failed for {mint[:8]}: {e}")
 
         # Score
         signal_input = SignalInput(
@@ -427,6 +501,10 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             pulse_sniper_pct=pulse_sniper,
             pulse_pro_trader_pct=pulse_pro,
             pulse_deployer_migrations=pulse_deployer,
+            holder_delta_pct=holder_delta,
+            entry_market_cap_usd=market_cap,
+            pulse_trending_score=pulse_trending,
+            pulse_dexscreener_boosted=pulse_ds_boosted,
         )
         
         score = scorer.score(
@@ -544,7 +622,13 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                 "kol": kol_detected,
                 "age_min": age_minutes,
                 "rug": rug_status,
-            }
+            },
+            "enrichment": {
+                "holder_delta_pct": holder_delta,
+                "trending_score": pulse_trending,
+                "dexscreener_boosted": pulse_ds_boosted,
+                "entry_market_cap": market_cap,
+            },
         }
 
         result["opportunities"].append(opportunity)
@@ -624,7 +708,45 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     result["state_updated"] = True
     result["next_cycle"] = cycle_num + 1
 
+    try:
+        result["paper_open"] = len([t for t in _load_paper_trades() if not t.get("closed")])
+    except Exception:
+        result["paper_open"] = 0
+    result["health_line"] = build_health_line(result)
+
     return result
+
+
+def _get_mcap_exit_tier(entry_market_cap: float, play_type: str = "accumulation") -> dict:
+    """Get market-cap-aware exit parameters.
+
+    | MC Tier        | TP1 pnl% (sell%) | TP2 pnl% (sell%) | Trail% | Decay min | SL%  |
+    |----------------|-------------------|-------------------|--------|-----------|------|
+    | Micro  <100k   | 80  (40)          | 200 (40)          | 25     | 20        | -30  |
+    | Small  100-500k| 60  (50)          | 150 (30)          | 20     | 30        | -25  |
+    | Mid    500k-2M | 40  (50)          | 100 (30)          | 15     | 45        | -20  |
+    | Large  >2M     | 30  (50)          | 60  (30)          | 12     | 60        | -15  |
+
+    Graduation plays use tighter time decay (halved).
+    """
+    if entry_market_cap < 100_000:
+        tier = {"tp1_pnl": 80, "tp1_sell": 40, "tp2_pnl": 200, "tp2_sell": 40,
+                "trail_pct": 25, "decay_min": 20, "stop_loss": -30, "label": "micro"}
+    elif entry_market_cap < 500_000:
+        tier = {"tp1_pnl": 60, "tp1_sell": 50, "tp2_pnl": 150, "tp2_sell": 30,
+                "trail_pct": 20, "decay_min": 30, "stop_loss": -25, "label": "small"}
+    elif entry_market_cap < 2_000_000:
+        tier = {"tp1_pnl": 40, "tp1_sell": 50, "tp2_pnl": 100, "tp2_sell": 30,
+                "trail_pct": 15, "decay_min": 45, "stop_loss": -20, "label": "mid"}
+    else:
+        tier = {"tp1_pnl": 30, "tp1_sell": 50, "tp2_pnl": 60, "tp2_sell": 30,
+                "trail_pct": 12, "decay_min": 60, "stop_loss": -15, "label": "large"}
+
+    # Graduation plays are speed plays — tighter time decay
+    if play_type == "graduation":
+        tier["decay_min"] = max(10, tier["decay_min"] // 2)
+
+    return tier
 
 
 async def run_position_watchdog(
@@ -632,30 +754,33 @@ async def run_position_watchdog(
     birdeye: BirdeyeClient,
 ) -> list[dict[str, Any]]:
     """Monitor open positions and generate exit decisions.
-    
+
+    Uses market-cap-aware exit tiers: smaller MC tokens get wider TP
+    targets (bigger moves are realistic) and tighter time decay.
+
     Returns list of exit decisions with reason and percentage.
     """
     exit_decisions = []
     positions = state.get("positions", [])
-    
+
     if not positions:
         return exit_decisions
-    
+
     # Batch fetch all position prices (R4 fix: parallel API calls)
     mints = [pos["token_mint"] for pos in positions]
     price_data = await batch_price_fetch(birdeye, mints, max_concurrent=3)
-    
+
     for pos in positions:
         mint = pos["token_mint"]
         entry_price = pos["entry_price"]
         entry_sol = pos["entry_amount_sol"]
         peak_price = pos.get("peak_price", entry_price)
         entry_time = datetime.fromisoformat(pos["entry_time"])
-        
+
         # Get refreshed price from batch fetch
         overview = price_data.get(mint, {})
         data = overview.get("data", overview)
-        
+
         if not data:
             exit_decisions.append({
                 "token_mint": mint,
@@ -665,67 +790,72 @@ async def run_position_watchdog(
                 "urgency": "high",
             })
             continue
-        
+
         current_price = float(data.get("price", 0))
         liquidity = float(data.get("liquidity", 0))
-        
+
         # Update peak price if needed
         if current_price > peak_price:
             pos["peak_price"] = current_price
             peak_price = current_price
-        
+
         # Calculate PnL
         pnl_pct = ((current_price - entry_price) / entry_price) * 100
         peak_drawdown_pct = ((current_price - peak_price) / peak_price) * 100
-        
+
         # Position age
         age_minutes = (datetime.utcnow() - entry_time).total_seconds() / 60
-        
-        # Exit logic
-        # 1. Stop-loss (-20%)
-        if pnl_pct <= -20:
+
+        # Market-cap-aware exit tiers
+        entry_mc = float(pos.get("entry_market_cap_usd", 0))
+        pos_play_type = pos.get("play_type", "accumulation")
+        tier = _get_mcap_exit_tier(entry_mc, pos_play_type)
+
+        # Exit logic (mcap-aware)
+        # 1. Stop-loss
+        if pnl_pct <= tier["stop_loss"]:
             exit_decisions.append({
                 "token_mint": mint,
                 "symbol": pos["token_symbol"],
-                "reason": f"Stop-loss hit: {pnl_pct:.1f}%",
+                "reason": f"Stop-loss hit: {pnl_pct:.1f}% (tier={tier['label']}, sl={tier['stop_loss']}%)",
                 "exit_pct": 100,
                 "urgency": "critical",
             })
-        # 2. Take-profit tier 1 (+100%)
-        elif pnl_pct >= 100 and not pos.get("tier1_exited", False):
+        # 2. Take-profit tier 1
+        elif pnl_pct >= tier["tp1_pnl"] and not pos.get("tier1_exited", False):
             exit_decisions.append({
                 "token_mint": mint,
                 "symbol": pos["token_symbol"],
-                "reason": f"TP tier 1: {pnl_pct:.1f}% (2x)",
-                "exit_pct": 50,
+                "reason": f"TP tier 1: {pnl_pct:.1f}% (tier={tier['label']}, target={tier['tp1_pnl']}%)",
+                "exit_pct": tier["tp1_sell"],
                 "urgency": "normal",
             })
             pos["tier1_exited"] = True
-        # 3. Take-profit tier 2 (+400%)
-        elif pnl_pct >= 400 and not pos.get("tier2_exited", False):
+        # 3. Take-profit tier 2
+        elif pnl_pct >= tier["tp2_pnl"] and not pos.get("tier2_exited", False):
             exit_decisions.append({
                 "token_mint": mint,
                 "symbol": pos["token_symbol"],
-                "reason": f"TP tier 2: {pnl_pct:.1f}% (5x)",
-                "exit_pct": 30,
+                "reason": f"TP tier 2: {pnl_pct:.1f}% (tier={tier['label']}, target={tier['tp2_pnl']}%)",
+                "exit_pct": tier["tp2_sell"],
                 "urgency": "normal",
             })
             pos["tier2_exited"] = True
-        # 4. Trailing stop (20% from peak while in profit)
-        elif pnl_pct > 0 and peak_drawdown_pct <= -20:
+        # 4. Trailing stop (mcap-aware trail % from peak while in profit)
+        elif pnl_pct > 0 and peak_drawdown_pct <= -tier["trail_pct"]:
             exit_decisions.append({
                 "token_mint": mint,
                 "symbol": pos["token_symbol"],
-                "reason": f"Trailing stop: {peak_drawdown_pct:.1f}% from peak",
+                "reason": f"Trailing stop: {peak_drawdown_pct:.1f}% from peak (tier={tier['label']}, trail={tier['trail_pct']}%)",
                 "exit_pct": 100,
                 "urgency": "high",
             })
-        # 5. Time decay (no movement after 60min)
-        elif age_minutes >= 60 and abs(pnl_pct) < 5:
+        # 5. Time decay (mcap-aware — no movement after N min)
+        elif age_minutes >= tier["decay_min"] and abs(pnl_pct) < 5:
             exit_decisions.append({
                 "token_mint": mint,
                 "symbol": pos["token_symbol"],
-                "reason": f"Time decay: {age_minutes:.0f}min, {pnl_pct:.1f}% PnL",
+                "reason": f"Time decay: {age_minutes:.0f}min, {pnl_pct:.1f}% PnL (tier={tier['label']}, limit={tier['decay_min']}min)",
                 "exit_pct": 100,
                 "urgency": "low",
             })
@@ -738,7 +868,7 @@ async def run_position_watchdog(
                 "exit_pct": 100,
                 "urgency": "high",
             })
-    
+
     return exit_decisions
 
 

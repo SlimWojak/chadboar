@@ -36,6 +36,11 @@ class SignalInput:
     pulse_pro_trader_pct: float = 0.0        # Pro trader + smart trader holdings %
     pulse_deployer_migrations: int = 0       # Deployer's prior migrations (rug risk > 3)
     pulse_stage: str = ""                     # "bonded" | "bonding" | "" (from Pulse)
+    # Enrichment signals (boost only — defaults never penalize)
+    holder_delta_pct: float = 0.0              # Birdeye: holder count change (positive = growing)
+    entry_market_cap_usd: float = 0.0          # For mcap-aware exit tiers
+    pulse_trending_score: float = 0.0          # Mobula: trending score (1h)
+    pulse_dexscreener_boosted: bool = False    # Mobula: DS boost detected
 
 
 @dataclass
@@ -580,18 +585,42 @@ class ConvictionScorer:
             if signals.pulse_pro_trader_pct > 10 and signals.pulse_organic_ratio >= 0.3:
                 primary_sources.append("pulse")
 
+        # ENRICHMENT BONUSES (apply to ALL play types — boost only, never penalize)
+        if signals.holder_delta_pct > 20:
+            bonus = 5
+            breakdown['enrichment_holder_growth'] = bonus
+            ordering_score += bonus
+            permission_score += bonus
+            reasoning_parts.append(f"ENRICHMENT: Rapid holder growth {signals.holder_delta_pct:.0f}% (+{bonus} pts)")
+
+        if signals.pulse_trending_score > 100:
+            bonus = 5
+            breakdown['enrichment_trending'] = bonus
+            ordering_score += bonus
+            permission_score += bonus
+            reasoning_parts.append(f"ENRICHMENT: Trending on Mobula score={signals.pulse_trending_score:.0f} (+{bonus} pts)")
+
+        if signals.pulse_dexscreener_boosted:
+            bonus = 5
+            breakdown['enrichment_ds_boosted'] = bonus
+            ordering_score += bonus
+            permission_score += bonus
+            reasoning_parts.append(f"ENRICHMENT: DexScreener boosted (+{bonus} pts)")
+
         # Apply data completeness penalty (Phase 2)
         permission_score = int(permission_score * data_completeness)
         if data_completeness < 1.0:
             reasoning_parts.append(f"Data completeness: {data_completeness:.1%}")
 
         # PERMISSION GATE (A1): Require >=2 PRIMARY sources for AUTO_EXECUTE
+        # Graduation plays skip the 2-source gate — Pulse quality + Rug Warden PASS is enough.
+        # Graduation is a speed play; requiring 2+ sources would block nearly everything.
         num_primary = len(primary_sources)
         auto_threshold = self._get_auto_execute_threshold(play_type)
 
         # Determine base recommendation
         if permission_score >= auto_threshold:
-            if num_primary >= 2:
+            if play_type == "graduation" or num_primary >= 2:
                 recommendation = "AUTO_EXECUTE"
             else:
                 recommendation = "WATCHLIST"
@@ -660,6 +689,10 @@ def main():
     parser.add_argument("--pulse-pro", type=float, default=0.0, help="Pulse pro trader %")
     parser.add_argument("--pulse-deployer", type=int, default=0, help="Deployer migrations")
     parser.add_argument("--pulse-stage", default="", help="Pulse stage: bonded or bonding")
+    parser.add_argument("--holder-delta", type=float, default=0.0, help="Holder count change %")
+    parser.add_argument("--entry-mcap", type=float, default=0.0, help="Entry market cap USD")
+    parser.add_argument("--pulse-trending", type=float, default=0.0, help="Pulse trending score 1h")
+    parser.add_argument("--pulse-ds-boosted", action="store_true", help="DexScreener boosted")
 
     args = parser.parse_args()
 
@@ -681,6 +714,10 @@ def main():
         pulse_pro_trader_pct=args.pulse_pro,
         pulse_deployer_migrations=args.pulse_deployer,
         pulse_stage=args.pulse_stage,
+        holder_delta_pct=args.holder_delta,
+        entry_market_cap_usd=args.entry_mcap,
+        pulse_trending_score=args.pulse_trending,
+        pulse_dexscreener_boosted=args.pulse_ds_boosted,
     )
 
     scorer = ConvictionScorer()
