@@ -33,6 +33,9 @@ load_dotenv(override=True)
 # Module-level diagnostics collector (reset per query_oracle call)
 _diagnostics: list[str] = []
 
+# Module-level source health collector (reset per query_oracle call)
+_source_health: dict[str, Any] = {}
+
 
 def _log(msg: str) -> None:
     """Print timestamped diagnostic to stderr (visible in heartbeat logs)."""
@@ -75,14 +78,14 @@ class MobulaClient:
     def get_pulse_listings(self, pulse_url: str, endpoint: str = "/api/2/pulse") -> dict[str, Any]:
         """Fetch Pulse v2 bonding/bonded token listings from Mobula.
 
-        Returns dict with 'bonding', 'bonded', 'new' token arrays.
-        Each token has: name, symbol, address, liquidity, volume,
-        holder categorization (bundlers/snipers/pro traders), organic volume ratio.
+        Uses assetMode=true for token-centric flat structure with address,
+        symbol, name, liquidity at top level plus organic volume, holder
+        categorization, deployer stats, and DexScreener boost flags.
         """
         url = f"{pulse_url}{endpoint}"
         params = {
             'chainId': 'solana:solana',
-            'assetMode': 'false',
+            'assetMode': 'true',
             'model': 'default',
         }
         resp = requests.get(url, headers=self.headers, params=params, timeout=15)
@@ -118,7 +121,7 @@ class MobulaClient:
         Used when portfolio API returns empty but networth shows accumulation.
         Identifies tokens the whale is buying by scanning recent tx history.
         """
-        url = f"{self.base_url}/wallet/transactions"
+        url = f"{self.base_url}/wallet/trades"
         params = {
             'wallet': wallet,
             'blockchains': 'solana',
@@ -165,8 +168,9 @@ class MobulaClient:
 
 async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
     """Query smart money signals using TGM pipeline with dex-trades fallback."""
-    global _diagnostics
+    global _diagnostics, _source_health
     _diagnostics = []
+    _source_health = {}
     phase_timing: dict[str, float] = {}
     t_total = time.monotonic()
     _log("Oracle query starting...")
@@ -281,6 +285,7 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
             "total_signals": len(all_signals),
             "phase_timing": phase_timing,
             "diagnostics": list(_diagnostics),
+            "source_health": dict(_source_health),
         }
     except Exception as e:
         _log(f"Oracle FAILED: {e}")
@@ -294,6 +299,7 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
             "total_signals": 0,
             "phase_timing": phase_timing,
             "diagnostics": list(_diagnostics),
+            "source_health": dict(_source_health),
         }
     finally:
         await client.close()
@@ -388,6 +394,7 @@ async def _run_mobula_scan(
     """
     phase_timing: dict[str, float] = {}
     t0 = time.monotonic()
+    _source_health["whale_total"] = len(whales)
     _log(f"Mobula: scanning {len(whales)} whales (parallel)...")
 
     # Query all whales in parallel via asyncio.to_thread
@@ -402,6 +409,7 @@ async def _run_mobula_scan(
         if isinstance(data, dict) and data.get('accum_24h_usd', 0) > 10000:
             mobula_signals.append(data)
 
+    _source_health["whale_active"] = len(mobula_signals)
     phase_timing["mobula_networth"] = round(time.monotonic() - t0, 1)
     _log(f"Mobula networth done: {len(mobula_signals)} accumulating ({time.monotonic()-t0:.1f}s)")
 
@@ -465,9 +473,11 @@ async def _run_pulse_scan(
         )
     except Exception as e:
         _log(f"Pulse fetch FAILED: {e}")
+        _source_health["pulse_error"] = str(e)
         raw = {}
 
     pulse_signals = _parse_pulse_candidates(raw)
+    pulse_raw_count = len(pulse_signals)
     phase_timing["pulse_fetch"] = round(time.monotonic() - t0, 1)
     _log(f"Pulse done: {len(pulse_signals)} candidates ({phase_timing['pulse_fetch']:.1f}s)")
 
@@ -479,16 +489,24 @@ async def _run_pulse_scan(
         try:
             dex_raw = await dex_client.get_solana_candidates_enriched()
             _log(f"DexScreener returned {len(dex_raw)} raw Solana candidates")
+            pulse_raw_count = len(dex_raw)
             for raw_candidate in dex_raw:
                 mapped = map_dexscreener_to_candidate(raw_candidate)
                 if mapped is not None:
                     pulse_signals.append(mapped)
             _log(f"DexScreener fallback: {len(pulse_signals)} candidates after filters")
+            _source_health["pulse_source"] = "dexscreener"
         except Exception as e:
             _log(f"DexScreener fallback FAILED: {e}")
+            _source_health["pulse_error"] = str(e)
         finally:
             await dex_client.close()
         phase_timing["dexscreener_fallback"] = round(time.monotonic() - t_dex, 1)
+    else:
+        _source_health["pulse_source"] = "mobula"
+
+    _source_health["pulse_raw"] = pulse_raw_count
+    _source_health["pulse_filtered"] = len(pulse_signals)
 
     return pulse_signals, phase_timing
 
@@ -496,21 +514,21 @@ async def _run_pulse_scan(
 def _parse_pulse_candidates(raw: dict[str, Any]) -> list[dict[str, Any]]:
     """Parse Pulse v2 response into scored candidate signals.
 
+    Pulse returns: {bonded: {data: [...]}, bonding: {data: [...]}, new: {data: [...]}}
+    Each item in assetMode=true is a flat token object with address, symbol,
+    name, liquidity, volume_24h, organic_volume_24h, holder breakdowns, etc.
+
     Filters:
-    - bonded tokens only (graduated from bonding curve)
     - liquidity > $5k
     - volume > $1k
-    - organic volume ratio > 0.3
-    - bundler holdings < 20%
-    - sniper holdings < 30%
     """
     candidates: list[dict[str, Any]] = []
-    data = raw.get("data", raw)
-    if not isinstance(data, dict):
+    if not isinstance(raw, dict):
         return []
 
     # Process bonded tokens (highest value — just migrated to Raydium)
-    bonded = data.get("bonded", [])
+    bonded_section = raw.get("bonded", {})
+    bonded = bonded_section.get("data", []) if isinstance(bonded_section, dict) else bonded_section
     if not isinstance(bonded, list):
         bonded = []
 
@@ -520,7 +538,8 @@ def _parse_pulse_candidates(raw: dict[str, Any]) -> list[dict[str, Any]]:
             candidates.append(candidate)
 
     # Also check bonding tokens (still on curve, but interesting)
-    bonding = data.get("bonding", [])
+    bonding_section = raw.get("bonding", {})
+    bonding = bonding_section.get("data", []) if isinstance(bonding_section, dict) else bonding_section
     if not isinstance(bonding, list):
         bonding = []
 
@@ -538,14 +557,22 @@ def _parse_pulse_candidates(raw: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _extract_pulse_token(token: dict[str, Any], stage: str) -> dict[str, Any] | None:
-    """Extract and filter a single Pulse token entry."""
-    mint = token.get("address", token.get("token_address", ""))
+    """Extract and filter a single Pulse token entry.
+
+    assetMode=true fields: address, symbol, name, liquidity, volume_24h,
+    organic_volume_24h, bundlersHoldings, snipersHoldings, proTradersHoldings,
+    smartTradersHoldingsPercentage, holdersCount, deployerMigrationsCount,
+    deployer, socials:{twitter,website,telegram}, trendingScore1h,
+    dexscreenerBoosted, dexscreenerAdPaid, market_cap, etc.
+    """
+    mint = token.get("address", "")
     if not mint:
         return None
 
-    symbol = token.get("symbol", token.get("name", "UNKNOWN"))
+    symbol = token.get("symbol", token.get("tokenSymbol", "UNKNOWN"))
+    name = token.get("name", token.get("tokenName", ""))
     liquidity = float(token.get("liquidity", 0))
-    volume = float(token.get("volume", token.get("volume_24h", 0)))
+    volume = float(token.get("volume_24h", 0))
 
     # Hard filters
     if liquidity < 5000:
@@ -553,41 +580,52 @@ def _extract_pulse_token(token: dict[str, Any], stage: str) -> dict[str, Any] | 
     if volume < 1000:
         return None
 
-    # Holder categorization
-    bundler_pct = float(token.get("bundlersHoldingsPercentage", 0))
-    sniper_pct = float(token.get("snipersHoldingsPercentage", 0))
-    pro_trader_pct = float(token.get("proTradersHoldingsPercentage", 0))
+    # Holder categorization (assetMode=true returns raw values, not percentages)
+    bundler_pct = float(token.get("bundlersHoldings", 0))
+    sniper_pct = float(token.get("snipersHoldings", 0))
+    pro_trader_pct = float(token.get("proTradersHoldings", 0))
     smart_trader_pct = float(token.get("smartTradersHoldingsPercentage", 0))
 
     # Organic volume ratio
-    total_vol = float(token.get("volume", token.get("volume_24h", 1)))
-    organic_vol = float(token.get("organicVolume", total_vol))
-    organic_ratio = round(organic_vol / total_vol, 3) if total_vol > 0 else 0.0
+    organic_vol = float(token.get("organic_volume_24h", volume))
+    organic_ratio = round(organic_vol / volume, 3) if volume > 0 else 0.0
 
     # Quality flags (passed through to scoring — no longer hard rejections)
     # Scoring applies penalties: bundler >20% (-10), sniper >30% (-10), organic <0.3 (-10)
 
     # Ghost metadata detection (no socials but volume exists)
-    has_socials = bool(token.get("twitter") or token.get("website") or token.get("telegram"))
+    socials = token.get("socials", {}) or {}
+    has_socials = bool(socials.get("twitter") or socials.get("website") or socials.get("telegram"))
     ghost_metadata = not has_socials and volume > 5000
 
     # Deployer migration count
-    deployer_migrations = int(token.get("deployerMigrations", token.get("deployer_migrations", 0)))
+    deployer_migrations = int(token.get("deployerMigrationsCount", token.get("deployerMigrations", 0)))
+
+    # Extra signals from Pulse (pass through for scoring/logging)
+    holders_count = int(token.get("holdersCount", token.get("holders_count", 0)))
+    trending_score = float(token.get("trendingScore1h", 0))
+    dexscreener_boosted = bool(token.get("dexscreenerBoosted", False))
+    market_cap = float(token.get("marketCap", token.get("market_cap", 0)))
 
     return {
         "token_mint": mint,
         "token_symbol": symbol,
+        "token_name": name,
         "source": "pulse",
         "discovery_source": f"pulse-{stage}",
         "pulse_stage": stage,
         "liquidity_usd": round(liquidity, 2),
         "volume_usd": round(volume, 2),
+        "market_cap_usd": round(market_cap, 2),
+        "holders_count": holders_count,
         "pulse_organic_ratio": organic_ratio,
         "pulse_bundler_pct": round(bundler_pct, 2),
         "pulse_sniper_pct": round(sniper_pct, 2),
         "pulse_pro_trader_pct": round(pro_trader_pct + smart_trader_pct, 2),
         "pulse_ghost_metadata": ghost_metadata,
         "pulse_deployer_migrations": deployer_migrations,
+        "pulse_trending_score": trending_score,
+        "pulse_dexscreener_boosted": dexscreener_boosted,
         "wallet_count": 0,
         "total_buy_usd": round(volume, 2),
         "confidence": "medium" if stage == "bonded" else "low",
@@ -807,12 +845,21 @@ async def _aggregate_dex_trades(client: NansenClient) -> list[dict[str, Any]]:
     Returns candidates in the same format as _parse_screener_candidates:
         token_mint, token_symbol, wallet_count, total_buy_usd, confidence, source
     """
-    data = await client.get_smart_money_transactions(limit=100)
+    try:
+        data = await client.get_smart_money_transactions(limit=100)
+    except Exception as e:
+        _source_health["nansen_error"] = str(e)
+        _source_health["nansen_raw_trades"] = 0
+        _source_health["nansen_candidates"] = 0
+        raise
     transactions = data.get("data", data.get("transactions", []))
     if not isinstance(transactions, list):
         _log(f"_aggregate_dex_trades: no transactions list in response (keys={list(data.keys())})")
+        _source_health["nansen_raw_trades"] = 0
+        _source_health["nansen_candidates"] = 0
         return []
 
+    _source_health["nansen_raw_trades"] = len(transactions)
     _log(f"_aggregate_dex_trades: processing {len(transactions)} raw trades")
 
     # Group by token_bought_address (accumulation = buying)
@@ -869,6 +916,7 @@ async def _aggregate_dex_trades(client: NansenClient) -> list[dict[str, Any]]:
     # Sort by smart_money_wallets DESC, then total_inflow_usd DESC
     filtered.sort(key=lambda s: (s["wallet_count"], s["total_buy_usd"]), reverse=True)
 
+    _source_health["nansen_candidates"] = len(filtered)
     _log(f"_aggregate_dex_trades: {len(filtered)} tokens after filters, returning top 5")
     return filtered[:5]
 

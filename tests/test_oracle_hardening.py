@@ -80,9 +80,9 @@ class TestPhaseTimingAndLogging:
 
     @pytest.mark.asyncio
     async def test_failed_phase_logged(self):
-        """When screener fails, diagnostics list contains error info."""
+        """When dex-trades fails, diagnostics list contains error info."""
         mock = _make_nansen_mock(
-            screen_tokens=AsyncMock(side_effect=Exception("screener down")),
+            get_smart_money_transactions=AsyncMock(side_effect=Exception("dex-trades down")),
         )
 
         with patch("lib.skills.oracle_query.NansenClient", return_value=mock):
@@ -94,7 +94,7 @@ class TestPhaseTimingAndLogging:
         assert len(diagnostics) > 0, "Should have diagnostic messages"
         # Should mention the failure
         error_lines = [d for d in diagnostics if "FAILED" in d or "failed" in d]
-        assert len(error_lines) > 0, "Should log screener failure"
+        assert len(error_lines) > 0, "Should log dex-trades failure"
 
 
 # ── Parallel execution ─────────────────────────────────────────────
@@ -166,55 +166,36 @@ class TestParallelExecution:
         assert len(holdings) >= 1
 
 
-# ── Screener fallback ──────────────────────────────────────────────
+# ── Dex-trades discovery ──────────────────────────────────────────
 
 
-class TestScreenerFallback:
-    """24h screener fallback before dex-trades."""
+class TestDexTradesDiscovery:
+    """Dex-trades as primary discovery in TGM pipeline."""
 
     @pytest.mark.asyncio
-    async def test_screener_24h_fallback(self):
-        """1h returns empty, 24h is called and returns candidates."""
-        call_timeframes = []
-
-        async def mock_screen(chains=None, timeframe="1h"):
-            call_timeframes.append(timeframe)
-            if timeframe == "1h":
-                return {"data": []}  # Empty
-            return TOKEN_SCREENER_RESPONSE  # 24h has data
-
+    async def test_dex_trades_returns_candidates(self):
+        """Dex-trades aggregation returns candidates sorted by wallet count."""
         mock = _make_nansen_mock()
-        mock.screen_tokens = mock_screen
 
         signals, holdings, timing = await _run_tgm_pipeline(mock)
 
-        # Should have tried both 1h and 24h
-        assert "1h" in call_timeframes
-        assert "24h" in call_timeframes
-        # Should have candidates from 24h
-        assert len(signals) > 0
-        assert signals[0]["discovery_source"] == "screener-24h"
-
-    @pytest.mark.asyncio
-    async def test_screener_both_empty_falls_to_dex(self):
-        """Both 1h and 24h empty, falls back to dex-trades."""
-        call_timeframes = []
-
-        async def mock_screen(chains=None, timeframe="1h"):
-            call_timeframes.append(timeframe)
-            return {"data": []}  # Always empty
-
-        mock = _make_nansen_mock()
-        mock.screen_tokens = mock_screen
-
-        signals, holdings, timing = await _run_tgm_pipeline(mock)
-
-        # Both timeframes attempted
-        assert "1h" in call_timeframes
-        assert "24h" in call_timeframes
-        # Should fall back to dex-trades
         assert len(signals) >= 1
         assert signals[0]["discovery_source"] == "dex-trades"
+        # BOAR111 has 4 wallets — should be top candidate
+        assert signals[0]["token_mint"] == "BOAR111"
+        assert signals[0]["wallet_count"] == 4
+
+    @pytest.mark.asyncio
+    async def test_dex_trades_failure_returns_empty(self):
+        """When dex-trades fails, pipeline returns empty signals with holdings."""
+        mock = _make_nansen_mock(
+            get_smart_money_transactions=AsyncMock(side_effect=Exception("dex-trades down")),
+        )
+
+        signals, holdings, timing = await _run_tgm_pipeline(mock)
+
+        assert len(signals) == 0
+        assert "phase1_discovery" in timing
 
 
 # ── Mobula token resolution ────────────────────────────────────────

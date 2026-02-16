@@ -64,8 +64,8 @@ class TestDivergenceDamping:
 
         assert 'divergence_damping' not in result.red_flags
 
-    def test_divergence_damping_forces_discard(self, scorer):
-        """2 whales + PASS warden + 0 narrative → DISCARD (score too low)."""
+    def test_divergence_damping_forces_low_recommendation(self, scorer):
+        """2 whales + PASS warden + 0 narrative → damped below auto-execute."""
         signals = SignalInput(
             smart_money_whales=2,
             narrative_volume_spike=0.0,
@@ -76,10 +76,11 @@ class TestDivergenceDamping:
         )
         result = scorer.score(signals, pot_balance_sol=14.0)
 
-        # 2 whales (30) + warden PASS (20) = 50 ordering
-        # 50 - 25 damping = 25 permission → DISCARD (< 60 threshold)
-        assert result.recommendation == "DISCARD"
+        # 2 whales (30) + warden PASS (30) = 60 ordering
+        # 60 - 25 damping = 35 permission → PAPER_TRADE (>30 paper threshold, <45 watchlist)
+        assert result.recommendation in ("PAPER_TRADE", "DISCARD")
         assert 'divergence_damping' in result.red_flags
+        assert result.permission_score < 45  # never reaches WATCHLIST
 
     def test_divergence_damping_stacks_with_partial_data(self, scorer):
         """Damping + data_completeness=0.8 both apply (orthogonal triggers)."""

@@ -74,9 +74,10 @@ async def quick_scan() -> dict[str, Any]:
 
     candidates = _parse_pulse_candidates(raw)
     pulse_raw_count = 0
-    data_section = raw.get("data", raw)
-    if isinstance(data_section, dict):
-        pulse_raw_count = len(data_section.get("bonded", [])) + len(data_section.get("bonding", []))
+    if isinstance(raw, dict):
+        for section in ("bonded", "bonding", "new"):
+            s = raw.get(section, {})
+            pulse_raw_count += len(s.get("data", [])) if isinstance(s, dict) else len(s) if isinstance(s, list) else 0
     _log(f"Pulse returned {len(candidates)} candidates after filters (raw: {pulse_raw_count})")
 
     # DexScreener fallback when Mobula Pulse returns 0 results

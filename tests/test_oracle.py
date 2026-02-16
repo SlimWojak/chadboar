@@ -66,8 +66,8 @@ class TestScreenerDiscovery:
         assert candidates[1]["wallet_count"] == 4
 
     @pytest.mark.asyncio
-    async def test_screener_discovery_with_enrichment(self):
-        """Full pipeline: screener → flow intel + who bought → DCAs → holdings."""
+    async def test_dex_trades_discovery_with_enrichment(self):
+        """Full pipeline: dex-trades → flow intel + who bought → DCAs → holdings."""
         mock = _make_nansen_mock()
 
         with patch("lib.skills.oracle_query.NansenClient", return_value=mock):
@@ -79,14 +79,14 @@ class TestScreenerDiscovery:
         signals = result["nansen_signals"]
         assert len(signals) == 3
 
-        # Check enrichment happened
-        alpha = signals[0]
-        assert alpha["token_mint"] == "ALPHA111"
-        assert "flow_intel" in alpha
-        assert alpha["flow_intel"]["whale_net_usd"] == 120000
-        assert "buyer_depth" in alpha
-        assert alpha["buyer_depth"]["smart_money_buyers"] == 5
-        assert alpha["discovery_source"] == "screener"
+        # Check enrichment happened on top candidate (BOAR = 4 wallets from dex-trades)
+        boar = signals[0]
+        assert boar["token_mint"] == "BOAR111"
+        assert "flow_intel" in boar
+        assert boar["flow_intel"]["whale_net_usd"] == 120000
+        assert "buyer_depth" in boar
+        assert boar["buyer_depth"]["smart_money_buyers"] == 5
+        assert boar["discovery_source"] == "dex-trades"
 
         # Holdings delta should be present
         assert len(result["holdings_delta"]) >= 1
