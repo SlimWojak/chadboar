@@ -97,7 +97,13 @@ def get_recent_assistant_outputs(session_file: Path, n: int = 5) -> list[dict]:
 
 
 def check_session_health() -> dict:
-    """Check if the heartbeat session shows signs of context collapse."""
+    """Check if the heartbeat session shows signs of context collapse.
+
+    Two detection methods:
+    1. Consecutive: 3+ short outputs in a row from the most recent (original)
+    2. Ratio: ≥60% of last 10 outputs are short (catches interleaved collapse
+       where one good output resets the consecutive counter)
+    """
     session_file = find_main_session_file()
 
     if session_file is None:
@@ -107,7 +113,7 @@ def check_session_health() -> dict:
             "recent_outputs": [],
         }
 
-    recent = get_recent_assistant_outputs(session_file, n=5)
+    recent = get_recent_assistant_outputs(session_file, n=10)
 
     if len(recent) < CONSECUTIVE_THRESHOLD:
         return {
@@ -116,7 +122,7 @@ def check_session_health() -> dict:
             "recent_outputs": recent,
         }
 
-    # Check for consecutive short outputs (only heartbeat model, not Sonnet)
+    # Method 1: Check for consecutive short outputs from the most recent
     consecutive_short = 0
     for output in reversed(recent):
         if output["output_tokens"] < MIN_OUTPUT_TOKENS:
@@ -124,16 +130,30 @@ def check_session_health() -> dict:
         else:
             break
 
-    if consecutive_short >= CONSECUTIVE_THRESHOLD:
+    # Method 2: Check ratio of short outputs in the full window
+    total_short = sum(1 for o in recent if o["output_tokens"] < MIN_OUTPUT_TOKENS)
+    short_ratio = total_short / len(recent) if recent else 0.0
+
+    is_collapsing = (
+        consecutive_short >= CONSECUTIVE_THRESHOLD
+        or (len(recent) >= 5 and short_ratio >= 0.6)
+    )
+
+    if is_collapsing:
+        method = "consecutive" if consecutive_short >= CONSECUTIVE_THRESHOLD else "ratio"
         return {
             "status": "COLLAPSING",
             "message": (
-                f"SESSION COLLAPSE WARNING: {consecutive_short} consecutive "
-                f"heartbeat outputs under {MIN_OUTPUT_TOKENS} tokens. "
+                f"SESSION COLLAPSE WARNING: "
+                f"{consecutive_short} consecutive short, "
+                f"{total_short}/{len(recent)} total short ({short_ratio:.0%}). "
+                f"Detection: {method}. "
                 f"Model may be pattern-locked. Consider session reset. "
                 f"Fix: delete session file, restart gateway."
             ),
             "consecutive_short": consecutive_short,
+            "total_short": total_short,
+            "short_ratio": round(short_ratio, 2),
             "recent_outputs": recent,
             "session_file": str(session_file),
             "alert": True,
@@ -143,6 +163,8 @@ def check_session_health() -> dict:
         "status": "CLEAR",
         "message": f"Session healthy. Last {len(recent)} outputs look substantive.",
         "consecutive_short": consecutive_short,
+        "total_short": total_short,
+        "short_ratio": round(short_ratio, 2),
         "recent_outputs": recent,
     }
 
