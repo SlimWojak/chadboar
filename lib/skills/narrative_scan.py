@@ -48,7 +48,8 @@ async def scan_narrative(
         else:
             # Broad scan: trending tokens
             trending = await birdeye.get_token_list_trending(limit=10)
-            tokens = trending.get("data", trending.get("items", []))
+            raw_data = trending.get("data", {})
+            tokens = raw_data.get("tokens", raw_data) if isinstance(raw_data, dict) else raw_data
             if isinstance(tokens, list):
                 for t in tokens[:5]:
                     mint = t.get("address", "")
@@ -100,7 +101,10 @@ async def _scan_token(
         # Momentum deltas
         h1_change_pct = float(data.get("h1Change", data.get("priceChange1hPercent", data.get("v1hChange", 0))))
         trades_resp = await birdeye.get_trades(mint, limit=50)
-        trade_data = trades_resp.get("data", [])
+        raw_trades = trades_resp.get("data", {})
+        trade_data = raw_trades.get("items", raw_trades) if isinstance(raw_trades, dict) else raw_trades
+        if not isinstance(trade_data, list):
+            trade_data = []
         large_buy_usd = 0.0
         large_sell_usd = 0.0
         if trade_data:
@@ -115,22 +119,26 @@ async def _scan_token(
                         large_sell_usd += usd
         whale_net_usd = large_buy_usd - large_sell_usd
 
-        # X mentions
-        x_data = await x_client.search_recent(f"${symbol} OR {symbol} solana", max_results=50)
-        tweets = x_data.get("data", [])
-        mention_count = len(tweets) if isinstance(tweets, list) else 0
-
-        # KOL detection (verified accounts with 10k+ followers)
+        # X mentions (gracefully degrade if X API unavailable)
+        mention_count = 0
         kol_count = 0
-        users = {}
-        for u in x_data.get("includes", {}).get("users", []):
-            users[u.get("id")] = u
-        if isinstance(tweets, list):
-            for tweet in tweets:
-                author = users.get(tweet.get("author_id", ""), {})
-                followers = author.get("public_metrics", {}).get("followers_count", 0)
-                if followers >= 10000:
-                    kol_count += 1
+        try:
+            x_data = await x_client.search_recent(f"${symbol} OR {symbol} solana", max_results=50)
+            tweets = x_data.get("data", [])
+            mention_count = len(tweets) if isinstance(tweets, list) else 0
+
+            # KOL detection (verified accounts with 10k+ followers)
+            users = {}
+            for u in x_data.get("includes", {}).get("users", []):
+                users[u.get("id")] = u
+            if isinstance(tweets, list):
+                for tweet in tweets:
+                    author = users.get(tweet.get("author_id", ""), {})
+                    followers = author.get("public_metrics", {}).get("followers_count", 0)
+                    if followers >= 10000:
+                        kol_count += 1
+        except Exception:
+            pass  # X API disabled — continue with onchain-only signals
 
         return {
             "token_mint": mint,

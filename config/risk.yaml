@@ -39,7 +39,8 @@ conviction:
     auto_execute: 85           # ≥85: accumulation auto-execute
     auto_execute_graduation: 65  # ≥65: graduation auto-execute (tuned for 3-min scanner)
     watchlist: 60              # 60+: watchlist, alert G with breakdown
-    discard: 60                # <60: discard, no alert
+    paper_trade: 40            # 40-59: paper trade (phantom entry, track PnL, write bead)
+    discard: 40                # <40: discard, no alert
 
   # Edge bank cold start: disabled until this many beads exist
   edge_bank_min_beads: 10      # Below this, edge_bank points redistributed to rug_warden

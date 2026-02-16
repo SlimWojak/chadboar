@@ -2,11 +2,12 @@
 
 Lightweight Pulse-only scan designed for high-frequency cron execution.
 Does NOT run full Oracle/Narrative pipeline — just:
-1. Fetch Pulse bonded/bonding tokens from Mobula
-2. Filter candidates (liquidity >$5k, volume >$1k)
-3. Run Rug Warden on top candidates
-4. Score with graduation profile
-5. Output actionable candidates for the heartbeat agent
+1. Fetch Pulse bonded/bonding tokens from Mobula (primary)
+2. If Mobula returns 0: fallback to DexScreener free API
+3. Filter candidates (liquidity >$5k, volume >$1k)
+4. Run Rug Warden on top candidates
+5. Score with graduation profile
+6. Output actionable candidates for the heartbeat agent
 
 This runs every 3 minutes via OpenClaw cron, independent of the
 10-minute full heartbeat cycle. The purpose is to catch PumpFun
@@ -35,6 +36,7 @@ from lib.skills.oracle_query import MobulaClient, _parse_pulse_candidates
 from lib.skills.warden_check import check_token
 from lib.scoring import ConvictionScorer, SignalInput, detect_play_type
 from lib.state import load_state
+from lib.clients.dexscreener import DexScreenerClient, map_dexscreener_to_candidate
 
 
 def _log(msg: str) -> None:
@@ -63,23 +65,47 @@ async def quick_scan() -> dict[str, Any]:
 
     client = MobulaClient(mobula_config)
 
-    # 1. Fetch Pulse data
+    # 1. Fetch Pulse data (Mobula primary, DexScreener fallback below)
     try:
         raw = client.get_pulse_listings(pulse_url, pulse_endpoint)
     except Exception as e:
-        _log(f"Pulse fetch FAILED: {e}")
-        return {"status": "ERROR", "error": str(e), "candidates": []}
+        _log(f"Pulse fetch FAILED: {e} — will try DexScreener fallback")
+        raw = {}
 
     candidates = _parse_pulse_candidates(raw)
-    _log(f"Pulse returned {len(candidates)} candidates after filters")
+    pulse_raw_count = 0
+    data_section = raw.get("data", raw)
+    if isinstance(data_section, dict):
+        pulse_raw_count = len(data_section.get("bonded", [])) + len(data_section.get("bonding", []))
+    _log(f"Pulse returned {len(candidates)} candidates after filters (raw: {pulse_raw_count})")
+
+    # DexScreener fallback when Mobula Pulse returns 0 results
+    discovery_source_label = "pulse"
+    if not candidates:
+        _log("Mobula Pulse empty — falling back to DexScreener...")
+        dex_client = DexScreenerClient()
+        try:
+            dex_raw = await dex_client.get_solana_candidates_enriched()
+            _log(f"DexScreener returned {len(dex_raw)} raw Solana candidates")
+            for raw_candidate in dex_raw:
+                mapped = map_dexscreener_to_candidate(raw_candidate)
+                if mapped is not None:
+                    candidates.append(mapped)
+            _log(f"DexScreener: {len(candidates)} candidates after filters (liq>$5k, vol>$1k)")
+            discovery_source_label = "dexscreener"
+        except Exception as e:
+            _log(f"DexScreener fallback FAILED: {e}")
+        finally:
+            await dex_client.close()
 
     if not candidates:
         elapsed = round(time.monotonic() - t0, 1)
         return {
             "status": "OK",
             "candidates": [],
-            "pulse_raw": len(raw.get("data", raw).get("bonded", [])) + len(raw.get("data", raw).get("bonding", [])),
+            "pulse_raw": pulse_raw_count,
             "pulse_filtered": 0,
+            "discovery_source": discovery_source_label,
             "elapsed_s": elapsed,
         }
 
@@ -155,8 +181,9 @@ async def quick_scan() -> dict[str, Any]:
         "status": "OK",
         "candidates": scored,
         "actionable": len(actionable),
-        "pulse_raw": len(raw.get("data", raw).get("bonded", [])) + len(raw.get("data", raw).get("bonding", [])),
+        "pulse_raw": pulse_raw_count,
         "pulse_filtered": len(candidates),
+        "discovery_source": discovery_source_label,
         "elapsed_s": elapsed,
     }
 

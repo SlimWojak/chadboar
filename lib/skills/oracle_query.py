@@ -1,8 +1,8 @@
 """Smart Money Oracle - CLI entry point.
 
 Queries Nansen Token God Mode (TGM) suite for whale accumulation signals on Solana.
-4-phase pipeline: Discovery → Validation → DCA Detection → Holdings Scan.
-Falls back to legacy dex-trades scan if Token Screener is unavailable.
+4-phase pipeline: Discovery (dex-trades) → Validation → DCA Detection → Holdings Scan.
+Uses /smart-money/dex-trades as primary discovery source (aggregates buy-side trades).
 
 Usage:
     python3 -m lib.skills.oracle_query
@@ -25,6 +25,7 @@ import requests
 
 from lib.clients.nansen import NansenClient
 from lib.clients.helius import HeliusClient
+from lib.clients.dexscreener import DexScreenerClient, map_dexscreener_to_candidate
 
 # Load environment variables (override=True: always use .env over stale inherited vars)
 load_dotenv(override=True)
@@ -299,7 +300,7 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
 
 
 async def _run_tgm_pipeline(client: NansenClient) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, float]]:
-    """Run full 4-phase TGM pipeline. Falls back to dex-trades if screener fails.
+    """Run full 4-phase TGM pipeline using dex-trades as primary discovery.
 
     Returns:
         (nansen_signals, holdings_delta, phase_timing)
@@ -311,51 +312,20 @@ async def _run_tgm_pipeline(client: NansenClient) -> tuple[list[dict[str, Any]],
     _log("Phase 4: Holdings scan (parallel start)...")
     holdings_task = asyncio.create_task(_fetch_holdings(client))
 
-    # --- Phase 1: Discovery (Token Screener, 5 credits) ---
+    # --- Phase 1: Discovery (dex-trades aggregation, primary source) ---
     t1 = time.monotonic()
     candidates: list[dict[str, Any]] = []
-    discovery_source = "screener"
+    discovery_source = "dex-trades"
 
-    _log("Phase 1: Token Screener (1h, filtered for early-stage)...")
+    _log("Phase 1: Aggregating smart money dex-trades (limit=100)...")
     try:
-        screener_data = await client.screen_tokens(
-            chains=["solana"],
-            timeframe="1h",
-            order_by=[{"field": "volume", "direction": "DESC"}],
-        )
-        candidates = _parse_screener_candidates(screener_data)
+        candidates = await _aggregate_dex_trades(client)
         _log(f"Phase 1 done: {len(candidates)} candidates ({time.monotonic()-t1:.1f}s)")
     except Exception as e:
-        _log(f"Phase 1 FAILED: {e} ({time.monotonic()-t1:.1f}s)")
-
-    if not candidates:
-        # 24h fallback
-        _log("Screener 1h empty, trying 24h...")
-        try:
-            screener_data = await client.screen_tokens(
-                chains=["solana"],
-                timeframe="24h",
-                order_by=[{"field": "volume", "direction": "DESC"}],
-            )
-            candidates = _parse_screener_candidates(screener_data)
-            discovery_source = "screener-24h"
-            _log(f"Screener 24h: {len(candidates)} candidates")
-        except Exception as e:
-            _log(f"Screener 24h failed: {e}")
-
-    if not candidates:
-        # Final fallback: dex-trades
-        _log("Screener empty, falling back to dex-trades...")
-        try:
-            dex_data = await client.get_smart_money_transactions(limit=50)
-            candidates = _parse_dex_trades_candidates(dex_data)
-            discovery_source = "dex-trades"
-            _log(f"Dex-trades: {len(candidates)} candidates")
-        except Exception as e:
-            _log(f"Dex-trades FAILED: {e}")
-            holdings_delta = await holdings_task
-            phase_timing["phase1_discovery"] = round(time.monotonic() - t1, 1)
-            return [], holdings_delta, phase_timing
+        _log(f"Phase 1 dex-trades FAILED: {e} ({time.monotonic()-t1:.1f}s)")
+        holdings_delta = await holdings_task
+        phase_timing["phase1_discovery"] = round(time.monotonic() - t1, 1)
+        return [], holdings_delta, phase_timing
 
     phase_timing["phase1_discovery"] = round(time.monotonic() - t1, 1)
 
@@ -480,6 +450,8 @@ async def _run_pulse_scan(
 ) -> tuple[list[dict[str, Any]], dict[str, float]]:
     """Fetch Mobula Pulse bonding/bonded tokens and filter candidates.
 
+    Falls back to DexScreener free API when Mobula returns 0 results.
+
     Returns:
         (pulse_signals, phase_timing)
     """
@@ -493,11 +465,31 @@ async def _run_pulse_scan(
         )
     except Exception as e:
         _log(f"Pulse fetch FAILED: {e}")
-        return [], {"pulse_fetch": round(time.monotonic() - t0, 1)}
+        raw = {}
 
     pulse_signals = _parse_pulse_candidates(raw)
     phase_timing["pulse_fetch"] = round(time.monotonic() - t0, 1)
     _log(f"Pulse done: {len(pulse_signals)} candidates ({phase_timing['pulse_fetch']:.1f}s)")
+
+    # DexScreener fallback when Mobula Pulse returns 0 results
+    if not pulse_signals:
+        t_dex = time.monotonic()
+        _log("Pulse empty — falling back to DexScreener...")
+        dex_client = DexScreenerClient()
+        try:
+            dex_raw = await dex_client.get_solana_candidates_enriched()
+            _log(f"DexScreener returned {len(dex_raw)} raw Solana candidates")
+            for raw_candidate in dex_raw:
+                mapped = map_dexscreener_to_candidate(raw_candidate)
+                if mapped is not None:
+                    pulse_signals.append(mapped)
+            _log(f"DexScreener fallback: {len(pulse_signals)} candidates after filters")
+        except Exception as e:
+            _log(f"DexScreener fallback FAILED: {e}")
+        finally:
+            await dex_client.close()
+        phase_timing["dexscreener_fallback"] = round(time.monotonic() - t_dex, 1)
+
     return pulse_signals, phase_timing
 
 
@@ -804,6 +796,81 @@ def _parse_dex_trades_candidates(data: dict[str, Any]) -> list[dict[str, Any]]:
 
     signals.sort(key=lambda s: s["wallet_count"], reverse=True)
     return signals[:10]
+
+
+async def _aggregate_dex_trades(client: NansenClient) -> list[dict[str, Any]]:
+    """Primary discovery: aggregate smart money dex-trades into accumulation candidates.
+
+    Fetches recent dex-trades (limit=100), groups by token BOUGHT (accumulation signal),
+    and returns top 5 candidates sorted by smart money wallet count then inflow USD.
+
+    Returns candidates in the same format as _parse_screener_candidates:
+        token_mint, token_symbol, wallet_count, total_buy_usd, confidence, source
+    """
+    data = await client.get_smart_money_transactions(limit=100)
+    transactions = data.get("data", data.get("transactions", []))
+    if not isinstance(transactions, list):
+        _log(f"_aggregate_dex_trades: no transactions list in response (keys={list(data.keys())})")
+        return []
+
+    _log(f"_aggregate_dex_trades: processing {len(transactions)} raw trades")
+
+    # Group by token_bought_address (accumulation = buying)
+    token_agg: dict[str, dict[str, Any]] = {}
+    for tx in transactions:
+        mint = tx.get("token_bought_address", "")
+        if not mint:
+            continue
+
+        wallet = tx.get("trader_address", "")
+        if not wallet:
+            continue
+
+        symbol = tx.get("token_bought_symbol", "UNKNOWN")
+        value_usd = float(tx.get("trade_value_usd", 0) or 0)
+        mcap = float(tx.get("token_bought_market_cap", 0) or 0)
+
+        if mint not in token_agg:
+            token_agg[mint] = {
+                "token_mint": mint,
+                "token_symbol": symbol,
+                "wallets": set(),
+                "total_inflow_usd": 0.0,
+                "market_cap": mcap,
+            }
+
+        token_agg[mint]["wallets"].add(wallet)
+        token_agg[mint]["total_inflow_usd"] += value_usd
+        # Keep the latest non-zero market_cap
+        if mcap > 0:
+            token_agg[mint]["market_cap"] = mcap
+
+    # Filter: smart_money_wallets >= 1, market_cap < $50M (or market_cap == 0 = unknown)
+    filtered = []
+    for info in token_agg.values():
+        wallet_count = len(info["wallets"])
+        mcap = info["market_cap"]
+
+        if wallet_count < 1:
+            continue
+        if mcap > 50_000_000:
+            continue
+
+        confidence = "high" if wallet_count >= 5 else "medium" if wallet_count >= 3 else "low"
+        filtered.append({
+            "token_mint": info["token_mint"],
+            "token_symbol": info["token_symbol"],
+            "wallet_count": wallet_count,
+            "total_buy_usd": round(info["total_inflow_usd"], 2),
+            "confidence": confidence,
+            "source": "nansen",
+        })
+
+    # Sort by smart_money_wallets DESC, then total_inflow_usd DESC
+    filtered.sort(key=lambda s: (s["wallet_count"], s["total_buy_usd"]), reverse=True)
+
+    _log(f"_aggregate_dex_trades: {len(filtered)} tokens after filters, returning top 5")
+    return filtered[:5]
 
 
 def _parse_holdings_delta(data: dict[str, Any]) -> list[dict[str, Any]]:

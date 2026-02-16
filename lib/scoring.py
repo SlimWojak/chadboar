@@ -598,6 +598,8 @@ class ConvictionScorer:
                 reasoning_parts.append(f"PERMISSION GATE: Only {num_primary} primary source(s) — need >=2 for AUTO_EXECUTE")
         elif permission_score >= self.thresholds['watchlist']:
             recommendation = "WATCHLIST"
+        elif permission_score >= self.thresholds.get('paper_trade', 40):
+            recommendation = "PAPER_TRADE"
         else:
             recommendation = "DISCARD"
 
