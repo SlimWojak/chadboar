@@ -161,8 +161,12 @@ fi
 # CHECK 3: Session collapse detection
 # ============================================================
 if [ "$gateway_alive" = true ] && [ -d "$SESSIONS_DIR" ]; then
-    collapse_result=$(cd "$WORKSPACE" && .venv/bin/python3 -m lib.guards.session_health 2>/dev/null || echo '{"status":"ERROR"}')
-    collapse_status=$(echo "$collapse_result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','CLEAR'))" 2>/dev/null || echo "CLEAR")
+    collapse_result=$(cd "$WORKSPACE" && .venv/bin/python3 -m lib.guards.session_health 2>/dev/null) || true
+    if [ -z "$collapse_result" ]; then
+        collapse_status="ERROR"
+    else
+        collapse_status=$(echo "$collapse_result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','CLEAR'))" 2>/dev/null || echo "CLEAR")
+    fi
 
     if [ "$collapse_status" = "COLLAPSING" ]; then
         log "CHECK: Session collapse detected — auto-clearing sessions"
