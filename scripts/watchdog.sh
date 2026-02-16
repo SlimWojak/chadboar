@@ -25,8 +25,9 @@ source "$WORKSPACE/.env"
 TG_TOKEN="$TELEGRAM_BOT_TOKEN"
 TG_CHAT="-1003795988066"
 
-# Thresholds
-HEARTBEAT_STALE_MINUTES=15
+# Thresholds — staleness must exceed 2 full heartbeat cycles (10min each)
+# to avoid false restarts when heartbeat is mid-execution
+HEARTBEAT_STALE_MINUTES=25
 SESSION_MAX_FILES=20
 SESSION_MAX_AGE_HOURS=12
 
