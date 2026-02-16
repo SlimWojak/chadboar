@@ -1,1 +1,1 @@
-thesis: \"Oracle: 0 signals. Narrative: 0. No candidates. Early AM market dead.\"\nregime: yellow\nopen_positions: 0\nnext_action: \"Monitor for whale accumulation + volume spikes.\"\nconcern: \"none\"
+thesis: \"Oracle: 0 signals (4.2s). Narrative: 0. Early UTC morning, low volume expected.\"\nregime: yellow\nopen_positions: 0\nnext_action: \"Monitor whale accumulation + volume spikes as US wakes.\"\nconcern: \"none\"
