@@ -16,6 +16,10 @@ STATE_FILE="$WORKSPACE/state/state.json"
 LOG_FILE="$WORKSPACE/logs/watchdog.log"
 LOCK_FILE="/tmp/chadboar-watchdog.lock"
 
+# Required for systemctl --user to work from cron
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+
 # Telegram config — direct curl, independent of gateway
 source "$WORKSPACE/.env"
 TG_TOKEN="$TELEGRAM_BOT_TOKEN"
