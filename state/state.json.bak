@@ -1,11 +1,11 @@
 {
-  "starting_balance_sol": 0.1,
-  "current_balance_sol": 0.1,
-  "current_balance_usd": 0.0,
-  "sol_price_usd": 0.0,
+  "starting_balance_sol": 14.0,
+  "current_balance_sol": 14.0,
+  "current_balance_usd": 1090.74,
+  "sol_price_usd": 77.91,
   "positions": [],
   "daily_exposure_sol": 0.0,
-  "daily_date": "",
+  "daily_date": "2026-02-14",
   "daily_loss_pct": 0.0,
   "consecutive_losses": 0,
   "halted": false,
@@ -15,8 +15,8 @@
   "total_wins": 0,
   "total_losses": 0,
   "last_trade_time": "",
-  "last_heartbeat_time": "2026-02-13T05:35:09.189841",
-  "dry_run_mode": true,
-  "dry_run_cycles_completed": 1,
+  "last_heartbeat_time": "2026-02-14T08:00:00Z",
+  "dry_run_mode": false,
+  "dry_run_cycles_completed": 0,
   "dry_run_target_cycles": 10
 }
