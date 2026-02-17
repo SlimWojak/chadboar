@@ -111,8 +111,16 @@ async def quick_scan() -> dict[str, Any]:
         }
 
     # 2. Run Rug Warden on top 3 candidates (parallel)
+    # Pass play_type=graduation and pre-fetched liquidity so warden uses right thresholds
     top_candidates = candidates[:3]
-    warden_tasks = [check_token(c["token_mint"]) for c in top_candidates]
+    warden_tasks = [
+        check_token(
+            c["token_mint"],
+            play_type="graduation",
+            pre_liquidity_usd=c.get("liquidity_usd", 0),
+        )
+        for c in top_candidates
+    ]
     warden_results = await asyncio.gather(*warden_tasks, return_exceptions=True)
 
     # 3. Score each candidate with graduation profile

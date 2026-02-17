@@ -37,10 +37,10 @@ conviction:
   # Thresholds (tuned for tiny-cap scalps — let the boar trade and learn)
   thresholds:
     auto_execute: 75           # ≥75: accumulation auto-execute (was 85 — too high, nothing trades)
-    auto_execute_graduation: 55  # ≥55: graduation auto-execute (was 65 — Pulse tokens rarely have pro traders)
-    watchlist: 45              # 45+: watchlist (was 60)
-    paper_trade: 30            # 30-44: paper trade (was 40)
-    discard: 30                # <30: discard, no alert
+    auto_execute_graduation: 50  # ≥50: graduation auto-execute (was 55 — WARN tokens with good pulse need to trade)
+    watchlist: 40              # 40+: watchlist (was 45 — let more candidates onto radar)
+    paper_trade: 25            # 25-39: paper trade (was 30 — more paper trades = more beads = faster learning)
+    discard: 25                # <25: discard, no alert
 
   # Edge bank cold start: disabled until this many beads exist
   edge_bank_min_beads: 10      # Below this, edge_bank points redistributed to rug_warden
@@ -84,13 +84,23 @@ exits_graduation:
   time_decay:
     no_momentum_minutes: 30    # If no move in 30min, the graduation play is done
 
-# Rug Warden thresholds
+# Rug Warden thresholds — ACCUMULATION (established tokens)
 rug_warden:
   min_liquidity_usd: 10000     # Reject if liquidity < $10k
   max_holder_concentration_pct: 80  # Reject if top 10 wallets > 80%
   min_token_age_seconds: 300   # Warn if token < 5 min old
   reject_mutable_mint: true    # Reject if mint/freeze authority is mutable
   reject_unlocked_lp: false    # Warn (not reject) if LP not locked/burned
+
+# Rug Warden thresholds — GRADUATION (PumpFun → Raydium, pre-graduation scalps)
+# These are asymmetric plays: small bet, high upside, accept more risk.
+# PumpFun tokens are young, concentrated, and LP is never locked — that's normal.
+rug_warden_graduation:
+  min_liquidity_usd: 3000      # PumpFun graduates with $3-20k liq — $3k floor
+  max_holder_concentration_pct: 95  # Early tokens always concentrated — WARN not FAIL above this
+  min_token_age_seconds: 120   # Warn if < 2 min (graduation window is 2-10 min)
+  reject_mutable_mint: true    # Still reject mutable mint — this is a real rug vector
+  reject_unlocked_lp: false    # PumpFun LP is never locked — don't even warn
 
 # Circuit breakers
 circuit_breakers:

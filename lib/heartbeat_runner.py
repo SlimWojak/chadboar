@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from lib.clients.birdeye import BirdeyeClient
-from lib.scoring import ConvictionScorer, SignalInput
+from lib.scoring import ConvictionScorer, SignalInput, detect_play_type
 from lib.utils.narrative_tracker import NarrativeTracker
 from lib.utils.async_batch import batch_price_fetch
 from lib.utils.file_lock import safe_read_json, safe_write_json
@@ -441,8 +441,21 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             kol_detected = narrative_sig.get("kol_mentions", 0) > 0
             age_minutes = narrative_tracker.get_age_minutes(mint)
         
-        # Run Rug Warden
-        rug_status = await run_rug_warden(mint)
+        # Detect play type early so we can pass it to Rug Warden
+        # (Need pulse fields to detect graduation vs accumulation)
+        pre_play_type = detect_play_type(SignalInput(
+            smart_money_whales=whales,
+            pulse_organic_ratio=float((oracle_sig or {}).get("pulse_organic_ratio", 1.0)),
+            pulse_ghost_metadata=(oracle_sig or {}).get("pulse_ghost_metadata", False),
+            pulse_bundler_pct=float((oracle_sig or {}).get("pulse_bundler_pct", 0.0)),
+            pulse_sniper_pct=float((oracle_sig or {}).get("pulse_sniper_pct", 0.0)),
+            pulse_pro_trader_pct=float((oracle_sig or {}).get("pulse_pro_trader_pct", 0.0)),
+            pulse_deployer_migrations=int((oracle_sig or {}).get("pulse_deployer_migrations", 0)),
+        ))
+        pre_liquidity = float((oracle_sig or {}).get("liquidity_usd", 0))
+
+        # Run Rug Warden with play-type-aware thresholds
+        rug_status = await run_rug_warden(mint, play_type=pre_play_type, pre_liquidity_usd=pre_liquidity or None)
         
         # RED FLAG CHECKS (Phase 3)
         concentrated_vol = False
@@ -942,10 +955,14 @@ async def run_position_watchdog(
     return exit_decisions
 
 
-async def run_rug_warden(mint: str) -> str:
+async def run_rug_warden(
+    mint: str,
+    play_type: str = "accumulation",
+    pre_liquidity_usd: float | None = None,
+) -> str:
     """Run Rug Warden check on a token mint."""
     try:
-        result = await check_token(mint)
+        result = await check_token(mint, play_type=play_type, pre_liquidity_usd=pre_liquidity_usd)
         return result.get("verdict", "FAIL")
     except Exception as e:
         # On error, return FAIL to be safe

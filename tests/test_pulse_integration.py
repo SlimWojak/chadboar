@@ -451,12 +451,12 @@ class TestPulseScoring:
         assert result.red_flags.get("pulse_sniper") == -10
 
     def test_serial_deployer_red_flag(self):
-        """Deployer with > 3 migrations triggers -10 penalty."""
+        """Deployer with > 5 migrations triggers -10 penalty."""
         scorer = ConvictionScorer()
         signals = SignalInput(
             smart_money_whales=3,
             rug_warden_status="PASS",
-            pulse_deployer_migrations=5,
+            pulse_deployer_migrations=6,
         )
         result = scorer.score(signals, pot_balance_sol=14.0)
         assert result.red_flags.get("pulse_serial_deployer") == -10

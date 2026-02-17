@@ -24,9 +24,43 @@ from lib.clients.birdeye import BirdeyeClient
 from lib.config import load_risk_config
 
 
-async def check_token(mint: str) -> dict[str, Any]:
-    """Run all 6 Rug Warden checks on a token."""
-    risk = load_risk_config().get("rug_warden", {})
+def _safe_float(val, default: float = 0.0) -> float:
+    """Null-safe float conversion — Birdeye returns None for missing fields."""
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_bool(val, default: bool = False) -> bool:
+    """Null-safe bool conversion."""
+    if val is None:
+        return default
+    return bool(val)
+
+
+async def check_token(
+    mint: str,
+    play_type: str = "accumulation",
+    pre_liquidity_usd: float | None = None,
+) -> dict[str, Any]:
+    """Run all 6 Rug Warden checks on a token.
+
+    Args:
+        mint: Token mint address.
+        play_type: "graduation" or "accumulation" — selects threshold profile.
+        pre_liquidity_usd: Pre-fetched liquidity from Pulse/DexScreener. If provided
+            and Birdeye returns near-zero, we trust the pre-fetched value instead.
+    """
+    risk_all = load_risk_config()
+    # Select threshold profile based on play type
+    if play_type == "graduation":
+        risk = risk_all.get("rug_warden_graduation", risk_all.get("rug_warden", {}))
+    else:
+        risk = risk_all.get("rug_warden", {})
+
     birdeye = BirdeyeClient()
 
     checks: dict[str, Any] = {}
@@ -42,7 +76,14 @@ async def check_token(mint: str) -> dict[str, Any]:
         security_data = security.get("data", security)
 
         # 1. Liquidity check
-        liquidity = float(overview_data.get("liquidity", 0))
+        birdeye_liquidity = _safe_float(overview_data.get("liquidity"))
+        # Trust pre-fetched liquidity if Birdeye returns near-zero for new tokens
+        if pre_liquidity_usd is not None and birdeye_liquidity < 100 and pre_liquidity_usd > 1000:
+            liquidity = pre_liquidity_usd
+            checks["liquidity_source"] = "pre-fetched (Birdeye returned near-zero)"
+        else:
+            liquidity = birdeye_liquidity
+            checks["liquidity_source"] = "birdeye"
         min_liq = risk.get("min_liquidity_usd", 10000)
         checks["liquidity_usd"] = liquidity
         if liquidity < min_liq:
@@ -50,16 +91,22 @@ async def check_token(mint: str) -> dict[str, Any]:
             reasons.append(f"Liquidity ${liquidity:,.0f} < ${min_liq:,.0f} minimum")
 
         # 2. Holder concentration
-        top_holder_pct = float(security_data.get("top10HolderPercent", 0)) * 100
+        top_holder_pct = _safe_float(security_data.get("top10HolderPercent")) * 100
         max_conc = risk.get("max_holder_concentration_pct", 80)
         checks["holder_concentration_pct"] = round(top_holder_pct, 1)
         if top_holder_pct > max_conc:
-            verdict = "FAIL"
-            reasons.append(f"Top 10 holders control {top_holder_pct:.1f}% (> {max_conc}%)")
+            # For graduation plays, high concentration is a WARN not FAIL
+            if play_type == "graduation":
+                if verdict != "FAIL":
+                    verdict = "WARN"
+                reasons.append(f"Top 10 holders control {top_holder_pct:.1f}% (> {max_conc}%) — WARN for graduation")
+            else:
+                verdict = "FAIL"
+                reasons.append(f"Top 10 holders control {top_holder_pct:.1f}% (> {max_conc}%)")
 
         # 3. Mint/freeze authority
-        mint_mutable = bool(security_data.get("isMintable", False))
-        freeze_mutable = bool(security_data.get("isFreezable", False))
+        mint_mutable = _safe_bool(security_data.get("isMintable"))
+        freeze_mutable = _safe_bool(security_data.get("isFreezable"))
         checks["mint_authority_mutable"] = mint_mutable
         checks["freeze_authority_mutable"] = freeze_mutable
         if risk.get("reject_mutable_mint", True) and (mint_mutable or freeze_mutable):
@@ -71,8 +118,8 @@ async def check_token(mint: str) -> dict[str, Any]:
         checks["honeypot_simulation"] = "SKIPPED"  # Implemented in Phase 3 with signer
 
         # 5. Token age
-        creation_time = overview_data.get("createdAt", 0)
-        if creation_time:
+        creation_time = _safe_float(overview_data.get("createdAt"))
+        if creation_time > 0:
             import time
             age_seconds = int(time.time() - creation_time / 1000)
             checks["token_age_seconds"] = age_seconds
@@ -85,13 +132,21 @@ async def check_token(mint: str) -> dict[str, Any]:
             checks["token_age_seconds"] = -1
 
         # 6. LP lock status
-        lp_locked = bool(security_data.get("isLpLocked", False))
-        lp_burned = bool(security_data.get("isLpBurned", False))
+        lp_locked = _safe_bool(security_data.get("isLpLocked"))
+        lp_burned = _safe_bool(security_data.get("isLpBurned"))
         checks["lp_locked"] = lp_locked or lp_burned
-        if not (lp_locked or lp_burned) and not risk.get("reject_unlocked_lp", False):
-            if verdict != "FAIL":
-                verdict = "WARN"
-            reasons.append("LP not locked or burned")
+        if not (lp_locked or lp_burned):
+            # For graduation plays, unlocked LP is expected (PumpFun doesn't lock LP)
+            if play_type == "graduation":
+                if risk.get("reject_unlocked_lp", False):
+                    verdict = "FAIL"
+                    reasons.append("LP not locked or burned (rejected by config)")
+                # else: silently accept — normal for graduation plays
+            else:
+                if not risk.get("reject_unlocked_lp", False):
+                    if verdict != "FAIL":
+                        verdict = "WARN"
+                    reasons.append("LP not locked or burned")
 
     except Exception as e:
         verdict = "FAIL"
@@ -102,6 +157,7 @@ async def check_token(mint: str) -> dict[str, Any]:
     return {
         "verdict": verdict,
         "token_mint": mint,
+        "play_type": play_type,
         "checks": checks,
         "reasons": reasons,
     }

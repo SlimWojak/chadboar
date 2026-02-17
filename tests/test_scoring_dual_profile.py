@@ -88,8 +88,8 @@ class TestGraduationProfile:
     """Graduation plays use graduation weights and threshold."""
 
     def test_graduation_uses_lower_threshold(self, scorer):
-        """Graduation auto-execute at 55, accumulation at 75."""
-        assert scorer._get_auto_execute_threshold("graduation") == 55
+        """Graduation auto-execute at 50, accumulation at 75."""
+        assert scorer._get_auto_execute_threshold("graduation") == 50
         assert scorer._get_auto_execute_threshold("accumulation") == 75
 
     def test_graduation_weights_have_pulse_quality(self, scorer):

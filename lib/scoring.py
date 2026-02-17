@@ -70,6 +70,7 @@ def detect_play_type(signals: SignalInput) -> str:
         or signals.pulse_bundler_pct > 0
         or signals.pulse_sniper_pct > 0
         or signals.pulse_deployer_migrations > 0
+        or signals.pulse_stage in ("bonded", "bonding")
     )
     has_whales = signals.smart_money_whales >= 1
 
@@ -179,12 +180,18 @@ class ConvictionScorer:
 
         return score, reasoning
 
-    def score_rug_warden(self, status: str, max_points: int = 20) -> tuple[int, str]:
-        """Score Rug Warden validation."""
+    def score_rug_warden(self, status: str, max_points: int = 20, play_type: str = "accumulation") -> tuple[int, str]:
+        """Score Rug Warden validation.
+
+        For graduation plays, WARN gives 75% instead of 50% — PumpFun tokens
+        commonly trigger WARN for unlocked LP and holder concentration, which
+        are expected characteristics, not red flags.
+        """
         if status == "PASS":
             return max_points, "Rug Warden: PASS"
         elif status == "WARN":
-            return int(max_points * 0.5), "Rug Warden: WARN (partial points)"
+            warn_pct = 0.75 if play_type == "graduation" else 0.5
+            return int(max_points * warn_pct), f"Rug Warden: WARN ({int(warn_pct*100)}% pts)"
         else:  # FAIL or UNKNOWN
             return 0, f"Rug Warden: {status}"
 
@@ -251,12 +258,18 @@ class ConvictionScorer:
             breakdown_extra['pulse_clean_holders'] = 5
             parts.append("clean holders")
 
-        # Bonded stage bonus (freshly graduated from PumpFun → Raydium)
+        # Stage bonus: bonded (graduated) or bonding (pre-graduation scalp)
         bonded_bonus = self.graduation_config.get('bonded_stage_bonus', 5)
         if signals.pulse_stage == "bonded" and bonded_bonus > 0:
             score += bonded_bonus
             breakdown_extra['pulse_bonded_bonus'] = bonded_bonus
             parts.append(f"bonded +{bonded_bonus}")
+        elif signals.pulse_stage == "bonding" and bonded_bonus > 0:
+            # Pre-graduation: smaller bonus — the play is riskier but still valid
+            bonding_bonus = max(bonded_bonus - 2, 2)
+            score += bonding_bonus
+            breakdown_extra['pulse_bonding_bonus'] = bonding_bonus
+            parts.append(f"bonding +{bonding_bonus}")
 
         score = min(score, max_points)
         reasoning = f"Pulse: {', '.join(parts)}" if parts else "Pulse: no quality signals"
@@ -409,6 +422,7 @@ class ConvictionScorer:
             warden_score, warden_reason = self.score_rug_warden(
                 signals.rug_warden_status,
                 max_points=weights.get('rug_warden', 25),
+                play_type="graduation",
             )
             breakdown['rug_warden'] = warden_score
             reasoning_parts.append(f"Warden: {warden_reason}")
@@ -574,7 +588,7 @@ class ConvictionScorer:
             permission_score -= penalty
             reasoning_parts.append(f"PULSE RED FLAG: Snipers {signals.pulse_sniper_pct:.1f}% (-{penalty} pts)")
 
-        if signals.pulse_deployer_migrations > 3:
+        if signals.pulse_deployer_migrations > 5:
             penalty = 10
             red_flags['pulse_serial_deployer'] = -penalty
             permission_score -= penalty
@@ -609,7 +623,7 @@ class ConvictionScorer:
             reasoning_parts.append(f"ENRICHMENT: Rapid holder growth {signals.holder_delta_pct:.0f}% (+{bonus} pts)")
 
         if signals.pulse_trending_score > 100:
-            bonus = 5
+            bonus = 5 if signals.pulse_trending_score <= 1000 else 8
             breakdown['enrichment_trending'] = bonus
             ordering_score += bonus
             permission_score += bonus
