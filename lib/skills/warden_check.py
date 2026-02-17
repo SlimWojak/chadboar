@@ -166,9 +166,18 @@ async def check_token(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Rug Warden — Pre-trade validation")
     parser.add_argument("--token", required=True, help="Token mint address")
+    parser.add_argument("--play-type", default="accumulation",
+                        choices=["graduation", "accumulation"],
+                        help="Play type selects threshold profile (graduation uses lower liq floor)")
+    parser.add_argument("--pre-liquidity", type=float, default=None,
+                        help="Pre-fetched liquidity from Pulse/DexScreener (USD)")
     args = parser.parse_args()
 
-    result = asyncio.run(check_token(args.token))
+    result = asyncio.run(check_token(
+        args.token,
+        play_type=args.play_type,
+        pre_liquidity_usd=args.pre_liquidity,
+    ))
     print(json.dumps(result, indent=2))
 
     exit_code = 0 if result["verdict"] == "PASS" else (2 if result["verdict"] == "WARN" else 1)

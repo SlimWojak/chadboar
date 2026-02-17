@@ -86,164 +86,55 @@ these are gateway suppression tokens that prevent delivery.
 - If status is `BLOCKED` → no new entries this cycle. Continue to step 7 (watchdog only).
 - If warnings present → note them, reduce sizing if needed.
 
-## 5. Smart Money Oracle
-```bash
-/home/autistboar/chadboar/boar -m lib.skills.oracle_query
-```
-- Review whale accumulation signals.
-- Extract: number of distinct whales accumulating per token.
+## 5-12. UNIFIED PIPELINE (Oracle + Narrative + Warden + Scoring + Exits + Entries)
 
-## 6. Narrative Hunter (On-Chain Volume Only)
+**Run the unified heartbeat pipeline as a SINGLE command:**
 ```bash
-/home/autistboar/chadboar/boar -m lib.skills.narrative_scan
-```
-- Review onchain volume momentum (X API disabled — no social/KOL data).
-- Uses Birdeye new/small-cap token list (sorted by 24h volume change %).
-- Extract: volume spike multiple, narrative age.
-- Note: `kol_detected` always false, `x_mentions_1h` always 0.
-
-## 7. Position Watchdog (Exit Tier Logic)
-- For each open position in state.json:
-  - Check current price vs entry price and peak price.
-  - **Stop-loss (-20%):** Exit 100% immediately.
-  - **Take-profit tier 1 (+100% / 2x):** Exit 50% of position.
-  - **Take-profit tier 2 (+400% / 5x):** Exit 30% of remaining position.
-  - **Trailing stop:** If position is in profit and drops 20% from peak → exit remainder.
-  - **Time decay:** If no price movement >5% after 60min → exit.
-  - **Liquidity drop:** If liquidity drops >50% from entry → prepare exit.
-
-## 8. Execute Exits
-- For any positions flagged for exit in step 7:
-```bash
-/home/autistboar/chadboar/boar -m lib.skills.execute_swap --direction sell --token <MINT> --amount <AMOUNT>
-```
-- Write autopsy bead for each exit:
-```bash
-/home/autistboar/chadboar/boar -m lib.skills.bead_write --type exit --data '<JSON>'
+/home/autistboar/chadboar/boar -m lib.heartbeat_runner
 ```
 
-## 9. Conviction Scoring (Replaces Old "Evaluate Opportunities")
-- For each candidate token detected in steps 5-6:
-  - Gather signal inputs:
-    - `smart_money_whales`: count from step 5
-    - `narrative_volume_spike`: multiple from step 6
-    - `narrative_kol_detected`: boolean from step 6
-    - `narrative_age_minutes`: time since first detection
-    - `rug_warden_status`: from step 11 (run warden first)
-    - `edge_bank_match_pct`: from step 10 (run query first)
-  
-  - Run conviction scorer:
-    ```bash
-    /home/autistboar/chadboar/boar lib/scoring.py \
-      --whales <N> \
-      --volume-spike <X> \
-      --kol \  # if detected
-      --narrative-age <MIN> \
-      --rug-warden <STATUS> \
-      --edge-match <PCT> \
-      --pot <CURRENT_SOL>
-    ```
-  
-  - Parse output: `total_score`, `breakdown`, `recommendation`, `position_size_sol`
-  
-  - **Decision logic:**
-    - `VETO`: Rug Warden FAIL → do not trade, log reason.
-    - `DISCARD` (score < 60): Ignore, no alert.
-    - `WATCHLIST` (60-84): Log with 🟢 INFO alert to G showing score breakdown.
-    - `AUTO_EXECUTE` (≥85): Proceed to step 12 (subject to tier gates + dry-run check).
+This module executes ALL of the following in one call:
+- Smart Money Oracle (Nansen TGM + Mobula Pulse + DexScreener fallback)
+- Narrative Hunter (Birdeye volume anomaly scan)
+- Position Watchdog (exit tier logic for open positions)
+- Execute exits (stop-loss, take-profit, trailing stop, time decay)
+- Rug Warden validation (graduation-aware thresholds for PumpFun tokens)
+- Conviction Scoring (dual-profile: graduation vs accumulation plays)
+- Grok Alpha Override (WATCHLIST → AUTO_EXECUTE upgrade)
+- Execute entries (subject to dry-run + tier gates + human gate >$100)
+- Write autopsy beads for entries/exits
+- Update state/state.json with new positions/balances
+- Append chain bead to flight recorder
 
-## 9b. Grok Alpha Override (NEW — Degen Brain)
-- For tokens scoring WATCHLIST (60-84) where Rug Warden = PASS:
-  - Send signal summary to Grok 4.1 FAST (high reasoning) via `lib/llm_utils.py`
-  - Grok returns YAML: `verdict: TRADE | NOPE`, reasoning, confidence
-  - If `TRADE`: upgrade to AUTO_EXECUTE. Grok's reasoning appended to score.
-  - If `NOPE`: stays WATCHLIST. No action.
-  - **INVARIANT PRESERVED**: Grok CANNOT override Rug Warden VETO. Period.
-  - **INVARIANT PRESERVED**: Human gate >$100 still enforced after Grok override.
-- Telegram format for Grok overrides:
-  ```
-  🐗🔥 GROK OVERRIDE: $TOKEN — TRADE
-  reasoning: <Grok's reasoning>
-  confidence: <0.0-1.0>
-  size: <SOL amount> | permission: <score>
-  ```
+**Parse the JSON output.** Key fields to report:
+- `decisions[]`: list of trade decisions (AUTO_EXECUTE, WATCHLIST, PAPER_TRADE, VETO, DISCARD)
+- `exits[]`: list of position exits (stop-loss, take-profit, trailing stop)
+- `opportunities[]`: scored candidates with `permission_score`, `recommendation`, `play_type`
+- `errors[]`: any API failures or issues during the cycle
+- `health_line`: diagnostic string for the report footer
+- `funnel`: pipeline metrics (nansen_raw, pulse_filtered, reached_scorer, scored_*)
 
-## 10. Edge Bank Query (Before Scoring)
-```bash
-/home/autistboar/chadboar/boar -m lib.skills.bead_query --context '<SIGNAL_SUMMARY>'
-```
-- Extract: historical match percentage for similar setups.
-- Feed this into conviction scoring as `edge_bank_match_pct`.
+**Decision logic (handled by the module — just report the outcomes):**
+- `VETO`: Rug Warden FAIL → trade blocked. Report the reason.
+- `DISCARD` (score < 25): Ignored, no alert.
+- `PAPER_TRADE` (25-39): Phantom trade logged for calibration.
+- `WATCHLIST` (40-49): Log with 🟢 INFO alert to G showing score breakdown.
+- `AUTO_EXECUTE` (≥50 graduation, ≥75 accumulation): Trade executed (if not dry-run).
+  - Position size >$100 → 🟡 WARNING sent, awaiting G approval (INV-HUMAN-GATE-100).
+  - Position size ≤$100 → auto-executed.
 
-## 11. Pre-Trade Validation (INV-RUG-WARDEN-VETO)
-- For any candidate token:
-```bash
-/home/autistboar/chadboar/boar -m lib.skills.warden_check --token <MINT_ADDRESS>
-```
-- Extract: `PASS`, `WARN`, or `FAIL`.
-- Feed this into conviction scoring as `rug_warden_status`.
-- **If FAIL:** Conviction scorer returns VETO → do not trade.
-
-## 12. Execute Entries (Subject to Dry-Run + Tier Gates)
-- **IF dry_run_mode is true:** Log the trade that WOULD execute, but DO NOT call execute_swap.
-- **ELSE (live trading):**
-  - Check tier gates:
-    - Position size >$100 equivalent → send 🟡 WARNING to G with thesis, await approval (INV-HUMAN-GATE-100). DO NOT execute until G responds.
-    - Position size ≤$100 → auto-execute.
-  
-  - Execute:
-    ```bash
-    /home/autistboar/chadboar/boar -m lib.skills.execute_swap \
-      --direction buy \
-      --token <MINT> \
-      --amount <SOL_AMOUNT>
-    ```
-  
-  - Write autopsy bead:
-    ```bash
-    /home/autistboar/chadboar/boar -m lib.skills.bead_write \
-      --type entry \
-      --data '<JSON_WITH_CONVICTION_BREAKDOWN>'
-    ```
+**DO NOT run individual modules (oracle_query, narrative_scan, warden_check, scoring.py) separately.**
+The unified runner handles play-type routing, graduation-aware thresholds, and proper signal merging.
+Running modules individually will miss graduation warden thresholds and play-type detection.
 
 ## 13. Update State
-**You MUST write state/state.json every cycle.** Use the write tool to overwrite the full file.
-Minimum fields to update every cycle (even if nothing happened):
-- `last_heartbeat_time`: set to current UTC ISO timestamp
-- `daily_date`: set to today's date (YYYY-MM-DD), reset `daily_exposure_sol` to 0 if date changed
-- If dry-run mode: increment `dry_run_cycles_completed` by 1
+**The heartbeat_runner (step 5-12) already updates state/state.json automatically.**
+It updates: `last_heartbeat_time`, `daily_date`, positions, balances, trade counts, and dry-run cycle count.
 
-Also update if applicable:
-- `positions`: add/remove based on entries/exits this cycle
-- `current_balance_sol` / `current_balance_usd`: recalculate after trades
-- `daily_exposure_sol`: add any new entry amounts
-- `total_trades`, `total_wins`, `total_losses`: increment on trades
-
-**Example** (no-trade dry-run cycle — still update timestamp and cycle count):
-```json
-{
-  "starting_balance_sol": 14.0,
-  "current_balance_sol": 14.0,
-  "current_balance_usd": 1183.0,
-  "sol_price_usd": 84.5,
-  "positions": [],
-  "daily_exposure_sol": 0.0,
-  "daily_date": "2026-02-12",
-  "daily_loss_pct": 0.0,
-  "consecutive_losses": 0,
-  "halted": false,
-  "halted_at": "",
-  "halt_reason": "",
-  "total_trades": 0,
-  "total_wins": 0,
-  "total_losses": 0,
-  "last_trade_time": "",
-  "last_heartbeat_time": "2026-02-12T08:06:00.000000",
-  "dry_run_mode": true,
-  "dry_run_cycles_completed": 3,
-  "dry_run_target_cycles": 10
-}
-```
+After the runner completes, verify state/state.json was updated by checking `last_heartbeat_time`
+matches the current cycle. If the runner failed or timed out, manually update at minimum:
+- `last_heartbeat_time`: current UTC ISO timestamp
+- `daily_date`: today's date (YYYY-MM-DD)
 
 ## 14. Report — Send to Telegram via Message Tool
 - **Build your report text** (no JSON wrapping, plain text with emojis).
