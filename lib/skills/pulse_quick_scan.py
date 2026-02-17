@@ -143,7 +143,7 @@ async def _check_open_positions() -> list[dict[str, Any]]:
             exit_reason = None
             if pnl_pct >= tp_pct:
                 exit_reason = f"SCALP_TP: +{pnl_pct:.1f}% (target: +{tp_pct}%)"
-            elif pnl_pct <= -sl_pct:
+            elif sl_pct > 0 and pnl_pct <= -sl_pct:
                 exit_reason = f"SCALP_SL: {pnl_pct:.1f}% (limit: -{sl_pct}%)"
             elif age_minutes >= decay_min and pnl_pct < 5:
                 exit_reason = (

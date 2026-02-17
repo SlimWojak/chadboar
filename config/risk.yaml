@@ -107,8 +107,8 @@ scalp:
   enabled: true
   max_mcap_usd: 50000          # Only scalp sub-$50K mcap tokens
   take_profit_pct: 20           # Exit 100% at +20%
-  stop_loss_pct: 15             # Exit 100% at -15%
-  time_decay_minutes: 15        # Force exit if no +5% move in 15 min
+  stop_loss_pct: 0              # DISABLED — time decay is the stop loss, not price chop
+  time_decay_minutes: 15        # Force exit if no +5% move in 15 min (this IS the SL)
   max_concurrent: 3             # Max 3 open scalp positions
   max_position_usd: 10          # $10 max per scalp (tiny learning bets)
   slippage_bps: 500             # 5% slippage tolerance (low-liq tokens)

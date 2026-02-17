@@ -5,7 +5,7 @@
   "sol_price_usd": 84.91,
   "positions": [],
   "daily_exposure_sol": 0.0,
-  "daily_date": "2026-02-16",
+  "daily_date": "2026-02-17",
   "daily_loss_pct": 0.0,
   "consecutive_losses": 0,
   "halted": false,
@@ -15,8 +15,9 @@
   "total_wins": 0,
   "total_losses": 0,
   "last_trade_time": "",
-  "last_heartbeat_time": "2026-02-16T10:40:40Z",
-  "dry_run_mode": false,
+  "last_heartbeat_time": "2026-02-17T03:40:54.886882",
+  "dry_run_mode": true,
   "dry_run_cycles_completed": 0,
-  "dry_run_target_cycles": 10
+  "dry_run_target_cycles": 10,
+  "daily_graduation_count": 0
 }
