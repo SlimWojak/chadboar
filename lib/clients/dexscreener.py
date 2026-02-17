@@ -329,6 +329,15 @@ def map_dexscreener_to_candidate(raw: dict[str, Any]) -> dict[str, Any] | None:
         stage = "bonding"
 
     source_flags = raw.get("source_flags", [])
+    boost_amount = int(raw.get("boost_amount", 0))
+    market_cap = float(raw.get("market_cap", raw.get("fdv", 0)))
+
+    # Map DexScreener boost to the scoring field
+    dexscreener_boosted = boost_amount > 0 or "boosted" in source_flags
+
+    # Use 1h price change as a proxy trending score (DexScreener doesn't have Mobula's trendingScore)
+    price_change_1h = float(raw.get("price_change_1h", 0))
+    trending_score = abs(price_change_1h) * 5 if abs(price_change_1h) > 20 else 0.0
 
     return {
         "token_mint": addr,
@@ -338,6 +347,7 @@ def map_dexscreener_to_candidate(raw: dict[str, Any]) -> dict[str, Any] | None:
         "pulse_stage": stage,
         "liquidity_usd": round(liquidity, 2),
         "volume_usd": round(volume, 2),
+        "market_cap_usd": round(market_cap, 2),
         # DexScreener doesn't provide holder categorization — use safe defaults
         "pulse_organic_ratio": 0.5,   # Unknown, neutral assumption
         "pulse_bundler_pct": 0.0,     # Unknown
@@ -345,11 +355,12 @@ def map_dexscreener_to_candidate(raw: dict[str, Any]) -> dict[str, Any] | None:
         "pulse_pro_trader_pct": 0.0,  # Unknown
         "pulse_ghost_metadata": ghost_metadata,
         "pulse_deployer_migrations": 0,  # Unknown
+        "pulse_trending_score": trending_score,
+        "pulse_dexscreener_boosted": dexscreener_boosted,
         # Market data from DexScreener
-        "price_change_1h": raw.get("price_change_1h", 0),
+        "price_change_1h": price_change_1h,
         "price_change_24h": raw.get("price_change_24h", 0),
         "fdv": raw.get("fdv", 0),
-        "market_cap": raw.get("market_cap", 0),
         "dex_id": dex_id,
         "pair_url": raw.get("pair_url", ""),
         # Standard fields for scorer compatibility

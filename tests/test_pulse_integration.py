@@ -336,16 +336,17 @@ class TestPulseParallelExecution:
         with patch("lib.skills.oracle_query.NansenClient", return_value=mock):
             with patch("builtins.open", MagicMock()):
                 with patch("yaml.safe_load", return_value=MOCK_FIREHOSE_WITH_PULSE):
-                    with patch.object(
-                        MobulaClient, "get_pulse_listings", mock_pulse_listings
-                    ):
+                    with patch("lib.skills.oracle_query._load_cached_whales", return_value=["MOCK_WHALE_1"]):
                         with patch.object(
-                            MobulaClient, "get_whale_networth_accum", mock_networth
+                            MobulaClient, "get_pulse_listings", mock_pulse_listings
                         ):
                             with patch.object(
-                                MobulaClient, "get_whale_portfolio", mock_portfolio
+                                MobulaClient, "get_whale_networth_accum", mock_networth
                             ):
-                                result = await query_oracle()
+                                with patch.object(
+                                    MobulaClient, "get_whale_portfolio", mock_portfolio
+                                ):
+                                    result = await query_oracle()
 
         assert result["status"] == "OK"
         assert "pulse_signals" in result
@@ -367,18 +368,19 @@ class TestPulseParallelExecution:
             return []
 
         with patch("lib.skills.oracle_query.NansenClient", return_value=mock):
-            with patch("builtins.open", MagicMock()):
-                with patch("yaml.safe_load", return_value=MOCK_FIREHOSE_WITH_PULSE):
-                    with patch.object(
-                        MobulaClient, "get_pulse_listings", mock_pulse_fail
-                    ):
+            with patch("lib.skills.oracle_query._load_cached_whales", return_value=["MOCK_WHALE_1"]):
+                with patch("builtins.open", MagicMock()):
+                    with patch("yaml.safe_load", return_value=MOCK_FIREHOSE_WITH_PULSE):
                         with patch.object(
-                            MobulaClient, "get_whale_networth_accum", mock_networth
+                            MobulaClient, "get_pulse_listings", mock_pulse_fail
                         ):
                             with patch.object(
-                                MobulaClient, "get_whale_portfolio", mock_portfolio
+                                MobulaClient, "get_whale_networth_accum", mock_networth
                             ):
-                                result = await query_oracle()
+                                with patch.object(
+                                    MobulaClient, "get_whale_portfolio", mock_portfolio
+                                ):
+                                    result = await query_oracle()
 
         assert result["status"] == "OK"
         # TGM should still succeed

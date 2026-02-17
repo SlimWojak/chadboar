@@ -37,12 +37,55 @@ _diagnostics: list[str] = []
 _source_health: dict[str, Any] = {}
 
 
+WHALE_CACHE_PATH = os.path.join(os.path.dirname(__file__), '../../state/whale_cache.json')
+
+
 def _log(msg: str) -> None:
     """Print timestamped diagnostic to stderr (visible in heartbeat logs)."""
     ts = time.strftime("%H:%M:%S")
     line = f"[oracle {ts}] {msg}"
     print(line, file=sys.stderr)
     _diagnostics.append(line)
+
+
+def _load_cached_whales() -> list[str]:
+    """Load dynamic whale wallet list from cache (populated by previous heartbeat).
+
+    Returns up to 20 wallet addresses that were seen buying tokens
+    in the most recent Nansen dex-trades results. Empty list on first run.
+    """
+    try:
+        with open(WHALE_CACHE_PATH, 'r') as f:
+            data = json.load(f)
+        wallets = data.get('wallets', [])
+        age_hours = (time.time() - data.get('updated_at', 0)) / 3600
+        if age_hours > 24:
+            _log(f"Whale cache stale ({age_hours:.1f}h old) — treating as empty")
+            return []
+        _log(f"Loaded {len(wallets)} cached whale wallets ({age_hours:.1f}h old)")
+        return wallets[:20]
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _save_discovered_whales(wallets: list[str]) -> None:
+    """Cache discovered whale wallets for use in next heartbeat cycle.
+
+    Extracts unique wallet addresses from Nansen dex-trades and saves
+    the top 20 most active (by trade count) to disk.
+    """
+    try:
+        data = {
+            'wallets': wallets[:20],
+            'count': len(wallets),
+            'updated_at': time.time(),
+            'updated_iso': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        }
+        with open(WHALE_CACHE_PATH, 'w') as f:
+            json.dump(data, f, indent=2)
+        _log(f"Cached {len(wallets[:20])} whale wallets for next cycle")
+    except Exception as e:
+        _log(f"Failed to cache whale wallets: {e}")
 
 class MobulaClient:
     def __init__(self, config: Dict[str, Any]):
@@ -225,15 +268,16 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
             if 'mobula' in firehose:
                 mobula_config = firehose['mobula']
                 mobula_client = MobulaClient(mobula_config)
-                whales = [
-                    "MJKqp326RZCHnAAbew9MDdui3iCKWco7fsK9sVuZTX2",
-                    "52C9T2T7JRojtxumYnYZhyUmrN7kqzvCLc4Ksvjk7TxD",
-                    "8BseXT9EtoEhBTKFFYkwTnjKSUZwhtmdKY2Jrj8j45Rt",
-                    "GitYucwpNcg6Dx1Y15UQ9TQn8LZMX1uuqQNn8rXxEWNC",
-                    "9QgXqrgdbVU8KcpfskqJpAXKzbaYQJecgMAruSWoXDkM"
-                ]
-                mobula_task_idx = len(tasks_to_run)
-                tasks_to_run.append(_run_mobula_scan(mobula_client, whales))
+                # Dynamic whale discovery: use wallets cached from previous
+                # heartbeat's Nansen dex-trades results. First cycle after
+                # boot uses empty list (no whale signals, but Nansen dex-trades
+                # already provides token-level discovery).
+                whales = _load_cached_whales()
+                if whales:
+                    mobula_task_idx = len(tasks_to_run)
+                    tasks_to_run.append(_run_mobula_scan(mobula_client, whales))
+                else:
+                    _log("Mobula: no cached whales — skipping wallet scan (will populate from dex-trades)")
 
                 # Pulse scan (Phase 0) — runs in parallel with TGM + Mobula
                 pulse_url = mobula_config.get('pulse_url', '')
@@ -918,6 +962,18 @@ async def _aggregate_dex_trades(client: NansenClient) -> list[dict[str, Any]]:
 
     _source_health["nansen_candidates"] = len(filtered)
     _log(f"_aggregate_dex_trades: {len(filtered)} tokens after filters, returning top 5")
+
+    # Extract and cache discovered wallet addresses for Mobula whale tracking.
+    # Sort by trade count (most active wallets first), deduplicate.
+    wallet_counts: dict[str, int] = {}
+    for info in token_agg.values():
+        for w in info["wallets"]:
+            wallet_counts[w] = wallet_counts.get(w, 0) + 1
+    discovered_wallets = sorted(wallet_counts.keys(), key=lambda w: wallet_counts[w], reverse=True)
+    if discovered_wallets:
+        _save_discovered_whales(discovered_wallets)
+        _source_health["whales_discovered"] = len(discovered_wallets)
+
     return filtered[:5]
 
 

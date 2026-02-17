@@ -13,9 +13,19 @@ ALSO output the report as plain text (backup delivery via cron announce).
 NEVER include `NO_REPLY` or `HEARTBEAT_OK` anywhere in your response —
 these are gateway suppression tokens that prevent delivery.
 
-**CRITICAL:** All commands use the `boar` wrapper (never use `cd ... && ...`):
+**CRITICAL COMMAND RULE — READ THIS CAREFULLY:**
+- ALL commands MUST use the `boar` wrapper. Example: `/home/autistboar/chadboar/boar -m <module>`
+- NEVER construct shell one-liners. NEVER use `&&`, `||`, `[ -f ... ]`, or `test` in bash commands.
+- NEVER write `cd /path && command` — the `boar` script handles directory and venv setup.
+- If you need to check a file exists, use the Python module (e.g., `boar -m lib.guards.killswitch`).
+- Reason: shell metacharacters get HTML-encoded by the gateway, causing syntax errors.
 ```bash
-/home/autistboar/chadboar/boar -m <module>
+# CORRECT:
+/home/autistboar/chadboar/boar -m lib.guards.killswitch
+
+# WRONG (will fail with HTML encoding error):
+# [ -f killswitch.txt ] && echo "active" || echo "clear"
+# cd /home/autistboar/chadboar && python3 -m lib.guards.killswitch
 ```
 
 ## 0. Dry-Run Mode Check
@@ -248,6 +258,17 @@ Also update if applicable:
 - If nothing happened (no signals, no positions, no alerts):
   → Output exactly: `🐗 HB #{cycle} | {pot} SOL | 0 pos | no signals | OINK`
   → Example: `🐗 HB #3 | 14.0 SOL | 0 pos | no signals | OINK`
+- **ALWAYS append the source health diagnostic as a second line.** The heartbeat result dict contains `health_line` — paste it on a new line after the main heartbeat line. If `health_line` is missing, emit `📡 DIAG UNAVAILABLE`.
+  → Example (healthy):
+  ```
+  🐗 HB #3 | 14.0 SOL | 0 pos | no signals | OINK
+  📡 Nan:5/100 | Bird:2/OK | DexS:3/75 | Whl:0/5 | Ppr:0
+  ```
+  → Example (API failure):
+  ```
+  🐗 HB #4 | 14.0 SOL | 0 pos | no signals | OINK
+  📡 Nan:0/ERR | Bird:0/401 | DexS:3/75 | Whl:0/5 | Ppr:0
+  ```
 
 ## 15. Write Checkpoint (ALWAYS)
 Write `state/checkpoint.md` with your current strategic thinking.
