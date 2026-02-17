@@ -7,6 +7,8 @@ scoring bonuses/red flags, and heartbeat extraction.
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import datetime
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -838,3 +840,434 @@ class TestPipelinePropagation:
         assert result.breakdown.get("pulse_bonded_bonus", 0) > 0
         assert result.breakdown.get("enrichment_trending", 0) > 0
         assert result.breakdown.get("enrichment_ds_boosted", 0) > 0
+
+
+# ── Scalp exit logic tests ────────────────────────────────────────
+
+
+class TestScalpExitLogic:
+    """Tests for _check_open_positions() exit triggers."""
+
+    def _make_state(self, positions=None, **overrides):
+        """Build a test state dict matching state.json format."""
+        state = {
+            "starting_balance_sol": 14.0,
+            "current_balance_sol": 14.0,
+            "current_balance_usd": 1190.0,
+            "sol_price_usd": 85.0,
+            "positions": positions or [],
+            "daily_exposure_sol": 0.0,
+            "daily_date": "2026-02-17",
+            "daily_loss_pct": 0.0,
+            "consecutive_losses": 0,
+            "halted": False,
+            "halted_at": "",
+            "halt_reason": "",
+            "total_trades": 0,
+            "total_wins": 0,
+            "total_losses": 0,
+            "last_trade_time": "",
+            "last_heartbeat_time": "",
+            "dry_run_mode": True,
+            "dry_run_cycles_completed": 0,
+            "dry_run_target_cycles": 10,
+            "daily_graduation_count": 0,
+        }
+        state.update(overrides)
+        return state
+
+    def _make_position(self, pnl_shift=0.0, age_minutes=5, **overrides):
+        """Build a test graduation position.
+
+        Args:
+            pnl_shift: Price change from entry (e.g. 0.25 = +25%).
+            age_minutes: How many minutes ago entry was.
+        """
+        from datetime import timedelta
+
+        entry_price = 0.001
+        current_price = entry_price * (1 + pnl_shift)
+        entry_time = (
+            datetime.utcnow() - timedelta(minutes=age_minutes)
+        ).isoformat()
+
+        pos = {
+            "token_mint": "SCALP_TEST_MINT",
+            "token_symbol": "STEST",
+            "direction": "long",
+            "entry_price": entry_price,
+            "entry_amount_sol": 0.12,
+            "entry_amount_tokens": 10000.0,
+            "entry_time": entry_time,
+            "peak_price": entry_price,
+            "play_type": "graduation",
+            "entry_market_cap_usd": 30000,
+            "entry_liquidity_usd": 8000,
+            "thesis": "Scalp test",
+            "signals": ["pulse"],
+        }
+        pos.update(overrides)
+        return pos, current_price
+
+    @pytest.mark.asyncio
+    async def test_take_profit_exit(self, tmp_path):
+        """Position at +25% triggers take profit exit (+20% threshold)."""
+        from lib.skills.pulse_quick_scan import _check_open_positions, STATE_PATH, RISK_PATH
+
+        pos, current_price = self._make_position(pnl_shift=0.25)
+        state = self._make_state(positions=[pos])
+
+        # Write state to tmp and patch paths
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        mock_price_data = {
+            "SCALP_TEST_MINT": {"data": {"price": current_price, "liquidity": 10000}}
+        }
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan.batch_price_fetch", new_callable=AsyncMock, return_value=mock_price_data), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "take_profit_pct": 20, "stop_loss_pct": 15, "time_decay_minutes": 15, "slippage_bps": 500},
+             }), \
+             patch("lib.skills.pulse_quick_scan.execute_swap", new_callable=AsyncMock, return_value={"status": "DRY_RUN"}), \
+             patch("lib.skills.pulse_quick_scan.write_bead", return_value={"status": "OK"}), \
+             patch("lib.skills.pulse_quick_scan.BirdeyeClient") as MockBirdeye:
+            MockBirdeye.return_value.close = AsyncMock()
+
+            exits = await _check_open_positions()
+
+        assert len(exits) == 1
+        assert "SCALP_TP" in exits[0]["exit_reason"]
+        assert exits[0]["pnl_pct"] > 20
+
+        # Verify state updated
+        updated_state = json.loads(state_file.read_text())
+        assert len(updated_state["positions"]) == 0
+        assert updated_state["total_wins"] == 1
+
+    @pytest.mark.asyncio
+    async def test_stop_loss_exit(self, tmp_path):
+        """Position at -20% triggers stop loss exit (-15% threshold)."""
+        from lib.skills.pulse_quick_scan import _check_open_positions
+
+        pos, current_price = self._make_position(pnl_shift=-0.20)
+        state = self._make_state(positions=[pos])
+
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        mock_price_data = {
+            "SCALP_TEST_MINT": {"data": {"price": current_price, "liquidity": 10000}}
+        }
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan.batch_price_fetch", new_callable=AsyncMock, return_value=mock_price_data), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "take_profit_pct": 20, "stop_loss_pct": 15, "time_decay_minutes": 15, "slippage_bps": 500},
+             }), \
+             patch("lib.skills.pulse_quick_scan.execute_swap", new_callable=AsyncMock, return_value={"status": "DRY_RUN"}), \
+             patch("lib.skills.pulse_quick_scan.write_bead", return_value={"status": "OK"}), \
+             patch("lib.skills.pulse_quick_scan.BirdeyeClient") as MockBirdeye:
+            MockBirdeye.return_value.close = AsyncMock()
+
+            exits = await _check_open_positions()
+
+        assert len(exits) == 1
+        assert "SCALP_SL" in exits[0]["exit_reason"]
+        assert exits[0]["pnl_pct"] < -15
+
+        updated_state = json.loads(state_file.read_text())
+        assert len(updated_state["positions"]) == 0
+        assert updated_state["total_losses"] == 1
+        assert updated_state["consecutive_losses"] == 1
+
+    @pytest.mark.asyncio
+    async def test_time_decay_exit(self, tmp_path):
+        """Position older than 15 min with <5% gain triggers time decay exit."""
+        from lib.skills.pulse_quick_scan import _check_open_positions
+
+        # +3% gain but 20 min old -> should decay
+        pos, current_price = self._make_position(pnl_shift=0.03, age_minutes=20)
+        state = self._make_state(positions=[pos])
+
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        mock_price_data = {
+            "SCALP_TEST_MINT": {"data": {"price": current_price, "liquidity": 10000}}
+        }
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan.batch_price_fetch", new_callable=AsyncMock, return_value=mock_price_data), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "take_profit_pct": 20, "stop_loss_pct": 15, "time_decay_minutes": 15, "slippage_bps": 500},
+             }), \
+             patch("lib.skills.pulse_quick_scan.execute_swap", new_callable=AsyncMock, return_value={"status": "DRY_RUN"}), \
+             patch("lib.skills.pulse_quick_scan.write_bead", return_value={"status": "OK"}), \
+             patch("lib.skills.pulse_quick_scan.BirdeyeClient") as MockBirdeye:
+            MockBirdeye.return_value.close = AsyncMock()
+
+            exits = await _check_open_positions()
+
+        assert len(exits) == 1
+        assert "SCALP_DECAY" in exits[0]["exit_reason"]
+
+    @pytest.mark.asyncio
+    async def test_no_exit_when_profitable_and_young(self, tmp_path):
+        """Position at +10% and 5 min old should hold (no exit trigger)."""
+        from lib.skills.pulse_quick_scan import _check_open_positions
+
+        pos, current_price = self._make_position(pnl_shift=0.10, age_minutes=5)
+        state = self._make_state(positions=[pos])
+
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        mock_price_data = {
+            "SCALP_TEST_MINT": {"data": {"price": current_price, "liquidity": 10000}}
+        }
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan.batch_price_fetch", new_callable=AsyncMock, return_value=mock_price_data), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "take_profit_pct": 20, "stop_loss_pct": 15, "time_decay_minutes": 15, "slippage_bps": 500},
+             }), \
+             patch("lib.skills.pulse_quick_scan.BirdeyeClient") as MockBirdeye:
+            MockBirdeye.return_value.close = AsyncMock()
+
+            exits = await _check_open_positions()
+
+        assert len(exits) == 0
+        # State should be unchanged — no position removed
+        unchanged_state = json.loads(state_file.read_text())
+        assert len(unchanged_state["positions"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_exit_when_old_but_profitable(self, tmp_path):
+        """Position at +10% and 20 min old should hold (>5% = no time decay)."""
+        from lib.skills.pulse_quick_scan import _check_open_positions
+
+        pos, current_price = self._make_position(pnl_shift=0.10, age_minutes=20)
+        state = self._make_state(positions=[pos])
+
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        mock_price_data = {
+            "SCALP_TEST_MINT": {"data": {"price": current_price, "liquidity": 10000}}
+        }
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan.batch_price_fetch", new_callable=AsyncMock, return_value=mock_price_data), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "take_profit_pct": 20, "stop_loss_pct": 15, "time_decay_minutes": 15, "slippage_bps": 500},
+             }), \
+             patch("lib.skills.pulse_quick_scan.BirdeyeClient") as MockBirdeye:
+            MockBirdeye.return_value.close = AsyncMock()
+
+            exits = await _check_open_positions()
+
+        assert len(exits) == 0
+
+
+class TestScalpEntryGuards:
+    """Tests for _execute_scalp_entry() safety guards."""
+
+    def _make_state(self, **overrides):
+        state = {
+            "starting_balance_sol": 14.0,
+            "current_balance_sol": 14.0,
+            "sol_price_usd": 85.0,
+            "positions": [],
+            "daily_exposure_sol": 0.0,
+            "daily_date": "2026-02-17",
+            "daily_loss_pct": 0.0,
+            "consecutive_losses": 0,
+            "halted": False,
+            "dry_run_mode": True,
+            "daily_graduation_count": 0,
+        }
+        state.update(overrides)
+        return state
+
+    def _make_candidate(self, score=60, recommendation="AUTO_EXECUTE", mcap=30000):
+        return {
+            "token_mint": "ENTRY_TEST_MINT",
+            "token_symbol": "ETEST",
+            "market_cap_usd": mcap,
+            "liquidity_usd": 8000,
+            "price_usd": 0.001,
+            "score": {
+                "permission_score": score,
+                "recommendation": recommendation,
+                "primary_sources": ["pulse"],
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_entry_blocked_when_halted(self, tmp_path):
+        """Scalp entry blocked when system is halted."""
+        from lib.skills.pulse_quick_scan import _execute_scalp_entry
+
+        state = self._make_state(halted=True)
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        candidate = self._make_candidate()
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "max_mcap_usd": 50000, "max_concurrent": 3, "max_position_usd": 10, "slippage_bps": 500},
+                 "conviction": {"graduation": {"max_daily_plays": 8}},
+                 "portfolio": {"drawdown_halt_pct": 50},
+             }):
+            entries = await _execute_scalp_entry([candidate])
+
+        assert len(entries) == 0
+
+    @pytest.mark.asyncio
+    async def test_entry_blocked_when_exposure_exceeded(self, tmp_path):
+        """Scalp entry blocked when daily exposure >= 30%."""
+        from lib.skills.pulse_quick_scan import _execute_scalp_entry
+
+        # 4.5 SOL exposure on 14 SOL balance = 32% > 30%
+        state = self._make_state(daily_exposure_sol=4.5)
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        candidate = self._make_candidate()
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "max_mcap_usd": 50000, "max_concurrent": 3, "max_position_usd": 10, "slippage_bps": 500},
+                 "conviction": {"graduation": {"max_daily_plays": 8}},
+                 "portfolio": {"drawdown_halt_pct": 50},
+             }):
+            entries = await _execute_scalp_entry([candidate])
+
+        assert len(entries) == 0
+
+    @pytest.mark.asyncio
+    async def test_entry_blocked_when_max_concurrent(self, tmp_path):
+        """Scalp entry blocked when max concurrent graduation positions reached."""
+        from lib.skills.pulse_quick_scan import _execute_scalp_entry
+
+        existing_positions = [
+            {"token_mint": f"POS_{i}", "play_type": "graduation"}
+            for i in range(3)
+        ]
+        state = self._make_state(positions=existing_positions)
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        candidate = self._make_candidate()
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "max_mcap_usd": 50000, "max_concurrent": 3, "max_position_usd": 10, "slippage_bps": 500},
+                 "conviction": {"graduation": {"max_daily_plays": 8}},
+                 "portfolio": {"drawdown_halt_pct": 50},
+             }):
+            entries = await _execute_scalp_entry([candidate])
+
+        assert len(entries) == 0
+
+    @pytest.mark.asyncio
+    async def test_entry_skips_high_mcap(self, tmp_path):
+        """Candidates with mcap > $50K are skipped (not scalp targets)."""
+        from lib.skills.pulse_quick_scan import _execute_scalp_entry
+
+        state = self._make_state()
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        candidate = self._make_candidate(mcap=100000)
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "max_mcap_usd": 50000, "max_concurrent": 3, "max_position_usd": 10, "slippage_bps": 500},
+                 "conviction": {"graduation": {"max_daily_plays": 8}},
+                 "portfolio": {"drawdown_halt_pct": 50},
+             }):
+            entries = await _execute_scalp_entry([candidate])
+
+        assert len(entries) == 0
+
+    @pytest.mark.asyncio
+    async def test_entry_skips_non_auto_execute(self, tmp_path):
+        """Candidates without AUTO_EXECUTE recommendation are skipped."""
+        from lib.skills.pulse_quick_scan import _execute_scalp_entry
+
+        state = self._make_state()
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        candidate = self._make_candidate(recommendation="WATCHLIST")
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "max_mcap_usd": 50000, "max_concurrent": 3, "max_position_usd": 10, "slippage_bps": 500},
+                 "conviction": {"graduation": {"max_daily_plays": 8}},
+                 "portfolio": {"drawdown_halt_pct": 50},
+             }):
+            entries = await _execute_scalp_entry([candidate])
+
+        assert len(entries) == 0
+
+    @pytest.mark.asyncio
+    async def test_dry_run_entry_creates_position(self, tmp_path):
+        """Dry run entry creates position in state without real swap."""
+        from lib.skills.pulse_quick_scan import _execute_scalp_entry
+
+        state = self._make_state(dry_run_mode=True)
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        candidate = self._make_candidate()
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "max_mcap_usd": 50000, "max_concurrent": 3, "max_position_usd": 10, "slippage_bps": 500},
+                 "conviction": {"graduation": {"max_daily_plays": 8}},
+                 "portfolio": {"drawdown_halt_pct": 50},
+             }), \
+             patch("lib.skills.pulse_quick_scan.execute_swap", new_callable=AsyncMock, return_value={
+                 "status": "DRY_RUN",
+                 "amount_in": "0",
+                 "amount_out": "0",
+             }), \
+             patch("lib.skills.pulse_quick_scan.write_bead", return_value={"status": "OK"}):
+            entries = await _execute_scalp_entry([candidate])
+
+        assert len(entries) == 1
+        assert entries[0]["dry_run"] is True
+        assert entries[0]["buy_status"] == "DRY_RUN"
+
+        # Verify state was updated
+        updated_state = json.loads(state_file.read_text())
+        assert len(updated_state["positions"]) == 1
+        assert updated_state["positions"][0]["play_type"] == "graduation"
+        assert updated_state["daily_graduation_count"] == 1
+        assert updated_state["current_balance_sol"] < 14.0  # SOL deducted
+
+    @pytest.mark.asyncio
+    async def test_entry_blocked_when_daily_grad_limit(self, tmp_path):
+        """Scalp entry blocked when daily graduation limit reached."""
+        from lib.skills.pulse_quick_scan import _execute_scalp_entry
+
+        state = self._make_state(daily_graduation_count=8)
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+
+        candidate = self._make_candidate()
+
+        with patch("lib.skills.pulse_quick_scan.STATE_PATH", state_file), \
+             patch("lib.skills.pulse_quick_scan._load_risk_config", return_value={
+                 "scalp": {"enabled": True, "max_mcap_usd": 50000, "max_concurrent": 3, "max_position_usd": 10, "slippage_bps": 500},
+                 "conviction": {"graduation": {"max_daily_plays": 8}},
+                 "portfolio": {"drawdown_halt_pct": 50},
+             }):
+            entries = await _execute_scalp_entry([candidate])
+
+        assert len(entries) == 0

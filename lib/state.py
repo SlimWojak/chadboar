@@ -34,6 +34,8 @@ class Position(BaseModel):
     play_type: str = "accumulation"
     entry_market_cap_usd: float = 0.0
     entry_liquidity_usd: float = 0.0
+    peak_price_usd: float = 0.0
+    entry_amount_tokens: float = 0.0
 
 
 class State(BaseModel):

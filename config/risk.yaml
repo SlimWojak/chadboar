@@ -102,6 +102,17 @@ rug_warden_graduation:
   reject_mutable_mint: true    # Still reject mutable mint — this is a real rug vector
   reject_unlocked_lp: false    # PumpFun LP is never locked — don't even warn
 
+# Scalp mode — tight exits for pulse quick scanner auto-trades
+scalp:
+  enabled: true
+  max_mcap_usd: 50000          # Only scalp sub-$50K mcap tokens
+  take_profit_pct: 20           # Exit 100% at +20%
+  stop_loss_pct: 15             # Exit 100% at -15%
+  time_decay_minutes: 15        # Force exit if no +5% move in 15 min
+  max_concurrent: 3             # Max 3 open scalp positions
+  max_position_usd: 10          # $10 max per scalp (tiny learning bets)
+  slippage_bps: 500             # 5% slippage tolerance (low-liq tokens)
+
 # Circuit breakers
 circuit_breakers:
   consecutive_losses: 3        # After 3 consecutive losses → reduce size 50%
