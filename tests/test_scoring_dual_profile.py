@@ -248,10 +248,24 @@ class TestEdgeBankColdStart:
 
 
 class TestVeto4Scoping:
-    """VETO 4 (wash trading) — downgraded to -25 penalty for accumulation only."""
+    """Unsocialized volume — reduced to -5 mild penalty at 20x+ (X API disabled)."""
 
-    def test_veto4_penalizes_accumulation(self, scorer):
-        """10x volume + no KOL + whales = -25 penalty for accumulation (not VETO)."""
+    def test_unsocialized_volume_fires_at_20x(self, scorer):
+        """20x+ volume + no KOL = mild -5 penalty for accumulation."""
+        signals = SignalInput(
+            smart_money_whales=2,
+            narrative_volume_spike=25.0,
+            narrative_kol_detected=False,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.play_type == "accumulation"
+        assert "unsocialized_volume" in result.red_flags
+        assert result.red_flags["unsocialized_volume"] == -5
+
+    def test_unsocialized_volume_does_not_fire_below_20x(self, scorer):
+        """12x volume + no KOL = NO penalty (was -25 at 10x, now only fires at 20x+)."""
         signals = SignalInput(
             smart_money_whales=2,
             narrative_volume_spike=12.0,
@@ -261,14 +275,13 @@ class TestVeto4Scoping:
         )
         result = scorer.score(signals, pot_balance_sol=14.0)
         assert result.play_type == "accumulation"
-        assert "unsocialized_volume" in result.red_flags
-        assert result.red_flags["unsocialized_volume"] == -25
+        assert "unsocialized_volume" not in result.red_flags
 
     def test_veto4_does_not_fire_for_graduation(self, scorer):
-        """10x volume + no KOL + pulse-only = NOT VETO for graduation."""
+        """20x volume + no KOL + pulse-only = NOT penalty for graduation."""
         signals = SignalInput(
             smart_money_whales=0,
-            narrative_volume_spike=15.0,
+            narrative_volume_spike=25.0,
             narrative_kol_detected=False,
             narrative_age_minutes=10,
             rug_warden_status="PASS",
@@ -277,7 +290,7 @@ class TestVeto4Scoping:
         )
         result = scorer.score(signals, pot_balance_sol=14.0)
         assert result.play_type == "graduation"
-        assert result.recommendation != "VETO"
+        assert "unsocialized_volume" not in result.red_flags
 
 
 # --- VETO 6: Graduation Daily Sublimit ---
@@ -496,3 +509,132 @@ class TestScoringSimulations:
         result = scorer.score(signals, pot_balance_sol=14.0)
         assert result.recommendation in ("DISCARD", "PAPER_TRADE")
         assert result.ordering_score < 45
+
+
+# --- Gradient Narrative Scoring ---
+
+
+class TestGradientNarrative:
+    """Narrative scoring uses gradient instead of binary 5x cutoff."""
+
+    def test_2x_volume_gives_5_points(self, scorer):
+        """2x volume spike = 5 narrative points (was 0 before gradient)."""
+        signals = SignalInput(
+            narrative_volume_spike=2.5,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.breakdown['narrative_hunter'] == 5
+
+    def test_3x_volume_gives_10_points(self, scorer):
+        """3x volume spike = 10 narrative points."""
+        signals = SignalInput(
+            narrative_volume_spike=3.5,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.breakdown['narrative_hunter'] == 10
+
+    def test_5x_volume_gives_15_points(self, scorer):
+        """5x volume spike = 15 narrative points (same as before)."""
+        signals = SignalInput(
+            narrative_volume_spike=5.0,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.breakdown['narrative_hunter'] == 15
+
+    def test_10x_volume_gives_20_points(self, scorer):
+        """10x volume spike = 20 narrative points."""
+        signals = SignalInput(
+            narrative_volume_spike=10.0,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.breakdown['narrative_hunter'] == 20
+
+    def test_20x_volume_gives_25_points(self, scorer):
+        """20x+ volume spike = 25 narrative points (max base)."""
+        signals = SignalInput(
+            narrative_volume_spike=25.0,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.breakdown['narrative_hunter'] == 25
+
+    def test_below_2x_gives_zero(self, scorer):
+        """Below 2x volume = 0 narrative points."""
+        signals = SignalInput(
+            narrative_volume_spike=1.9,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.breakdown['narrative_hunter'] == 0
+
+    def test_3x_volume_is_primary_source(self, scorer):
+        """3x+ volume counts as primary source (lowered from 5x)."""
+        signals = SignalInput(
+            narrative_volume_spike=3.5,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert "narrative" in result.primary_sources
+
+
+# --- Accumulation Convergence Path ---
+
+
+class TestAccumulationConvergence:
+    """Accumulation can reach AUTO_EXECUTE with warden as primary source."""
+
+    def test_warden_pass_is_primary_source(self, scorer):
+        """Rug Warden PASS counts as primary source for accumulation."""
+        signals = SignalInput(
+            smart_money_whales=0,
+            narrative_volume_spike=3.0,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert "warden" in result.primary_sources
+
+    def test_warden_warn_not_primary_accumulation(self, scorer):
+        """Rug Warden WARN does NOT count as primary for accumulation (only PASS)."""
+        signals = SignalInput(
+            smart_money_whales=0,
+            narrative_volume_spike=3.0,
+            narrative_age_minutes=10,
+            rug_warden_status="WARN",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert "warden" not in result.primary_sources
+
+    def test_narrative_plus_warden_enables_auto_execute(self, scorer):
+        """narrative + warden = 2 primary sources → AUTO_EXECUTE possible."""
+        signals = SignalInput(
+            smart_money_whales=2,
+            narrative_volume_spike=10.0,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert len(result.primary_sources) >= 2
+        assert result.recommendation == "AUTO_EXECUTE"
+
+    def test_1_whale_is_primary_source(self, scorer):
+        """1+ whale counts as oracle primary source (lowered from 3)."""
+        signals = SignalInput(
+            smart_money_whales=1,
+            narrative_volume_spike=3.0,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert "oracle" in result.primary_sources

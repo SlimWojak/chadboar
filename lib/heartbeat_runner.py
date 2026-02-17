@@ -24,7 +24,7 @@ from lib.utils.file_lock import safe_read_json, safe_write_json
 from lib.utils.red_flags import check_concentrated_volume
 from lib.skills.warden_check import check_token
 from lib.skills.oracle_query import query_oracle, _empty_flow_intel, _empty_buyer_depth
-from lib.skills.paper_trade import _load_trades as _load_paper_trades
+from lib.skills.paper_trade import _load_trades as _load_paper_trades, log_paper_trade
 from lib.llm_utils import call_grok
 
 import httpx
@@ -152,6 +152,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         "narrative_with_spike": 0,
         "reached_scorer": 0,
         "scored_discard": 0,
+        "scored_paper_trade": 0,
         "scored_watchlist": 0,
         "scored_execute": 0,
         "scored_veto": 0,
@@ -269,6 +270,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         "buyer_depth": _empty_buyer_depth(),
                         "dca_count": 0,
                         "discovery_source": ps.get("discovery_source", "pulse-bonded"),
+                        "market_cap_usd": ps.get("market_cap_usd", 0.0),
                         # Preserve pulse-specific fields for scoring
                         "pulse_ghost_metadata": ps.get("pulse_ghost_metadata", False),
                         "pulse_organic_ratio": ps.get("pulse_organic_ratio", 1.0),
@@ -276,6 +278,9 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         "pulse_sniper_pct": ps.get("pulse_sniper_pct", 0.0),
                         "pulse_pro_trader_pct": ps.get("pulse_pro_trader_pct", 0.0),
                         "pulse_deployer_migrations": ps.get("pulse_deployer_migrations", 0),
+                        "pulse_stage": ps.get("pulse_stage", ""),
+                        "pulse_trending_score": ps.get("pulse_trending_score", 0.0),
+                        "pulse_dexscreener_boosted": ps.get("pulse_dexscreener_boosted", False),
                     })
                     existing_mints.add(ps["token_mint"])
         else:
@@ -349,7 +354,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     funnel["narrative_raw"] = len(narrative_signals)
     funnel["narrative_with_spike"] = len([
         s for s in narrative_signals
-        if float(s.get("volume_vs_avg", "0x").replace("x", "")) >= 5.0
+        if float(s.get("volume_vs_avg", "0x").replace("x", "")) >= 2.0
     ])
 
     # PARTIAL DATA PENALTY (A2): Calculate data completeness
@@ -468,6 +473,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         pulse_sniper = float((oracle_sig or {}).get("pulse_sniper_pct", 0.0))
         pulse_pro = float((oracle_sig or {}).get("pulse_pro_trader_pct", 0.0))
         pulse_deployer = int((oracle_sig or {}).get("pulse_deployer_migrations", 0))
+        pulse_stage = (oracle_sig or {}).get("pulse_stage", "")
         pulse_trending = float((oracle_sig or {}).get("pulse_trending_score", 0.0))
         pulse_ds_boosted = bool((oracle_sig or {}).get("pulse_dexscreener_boosted", False))
         market_cap = float((oracle_sig or {}).get("market_cap_usd", 0.0))
@@ -501,6 +507,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             pulse_sniper_pct=pulse_sniper,
             pulse_pro_trader_pct=pulse_pro,
             pulse_deployer_migrations=pulse_deployer,
+            pulse_stage=pulse_stage,
             holder_delta_pct=holder_delta,
             entry_market_cap_usd=market_cap,
             pulse_trending_score=pulse_trending,
@@ -638,6 +645,8 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             funnel["scored_veto"] += 1
         elif score.recommendation == "DISCARD":
             funnel["scored_discard"] += 1
+        elif score.recommendation == "PAPER_TRADE":
+            funnel["scored_paper_trade"] += 1
         elif score.recommendation == "WATCHLIST":
             funnel["scored_watchlist"] += 1
         elif score.recommendation == "AUTO_EXECUTE":
@@ -647,9 +656,70 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         if score.recommendation == "VETO":
             result["decisions"].append(f"🐗 VETO: {mint[:8]} — {score.reasoning}")
         elif score.recommendation == "DISCARD":
-            result["decisions"].append(f"🐗 NOPE: {mint[:8]} — permission {score.permission_score} < 60")
+            result["decisions"].append(f"🐗 NOPE: {mint[:8]} — permission {score.permission_score} < {scorer.thresholds.get('paper_trade', 30)}")
+        elif score.recommendation == "PAPER_TRADE":
+            # Log phantom trade for calibration — builds beads without risk
+            token_symbol = (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN")
+            try:
+                paper_candidate = {
+                    "token_mint": mint,
+                    "token_symbol": token_symbol,
+                    "price_usd": float((oracle_sig or {}).get("market_cap_usd", 0)),
+                    "liquidity_usd": float((oracle_sig or {}).get("liquidity_usd", 0)),
+                    "volume_usd": float((oracle_sig or {}).get("volume_usd", (oracle_sig or {}).get("total_buy_usd", 0))),
+                    "source": (oracle_sig or {}).get("source", "unknown"),
+                    "discovery_source": (oracle_sig or {}).get("discovery_source", "unknown"),
+                    "score": {
+                        "play_type": score.play_type,
+                        "permission_score": score.permission_score,
+                        "ordering_score": score.ordering_score,
+                        "recommendation": score.recommendation,
+                        "breakdown": score.breakdown,
+                        "red_flags": score.red_flags,
+                    },
+                    "warden": {"verdict": rug_status},
+                }
+                log_paper_trade(paper_candidate)
+                result["decisions"].append(
+                    f"🐗📝 PAPER: {token_symbol} ({mint[:8]}) — [{score.play_type}] "
+                    f"permission {score.permission_score}, ordering {score.ordering_score}"
+                )
+            except Exception as e:
+                result["errors"].append(f"Paper trade logging failed for {mint[:8]}: {e}")
+                result["decisions"].append(
+                    f"🐗📝 PAPER (log failed): {mint[:8]} — [{score.play_type}] "
+                    f"permission {score.permission_score}"
+                )
         elif score.recommendation == "WATCHLIST":
-            result["decisions"].append(f"🐗 WATCHLIST: {mint[:8]} — [{score.play_type}] permission {score.permission_score} (60-84), ordering {score.ordering_score}, primary {len(score.primary_sources)}")
+            # Also paper-trade WATCHLIST candidates to build beads faster
+            token_symbol = (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN")
+            try:
+                paper_candidate = {
+                    "token_mint": mint,
+                    "token_symbol": token_symbol,
+                    "price_usd": float((oracle_sig or {}).get("market_cap_usd", 0)),
+                    "liquidity_usd": float((oracle_sig or {}).get("liquidity_usd", 0)),
+                    "volume_usd": float((oracle_sig or {}).get("volume_usd", (oracle_sig or {}).get("total_buy_usd", 0))),
+                    "source": (oracle_sig or {}).get("source", "unknown"),
+                    "discovery_source": (oracle_sig or {}).get("discovery_source", "unknown"),
+                    "score": {
+                        "play_type": score.play_type,
+                        "permission_score": score.permission_score,
+                        "ordering_score": score.ordering_score,
+                        "recommendation": score.recommendation,
+                        "breakdown": score.breakdown,
+                        "red_flags": score.red_flags,
+                    },
+                    "warden": {"verdict": rug_status},
+                }
+                log_paper_trade(paper_candidate)
+            except Exception:
+                pass  # Best-effort paper logging for watchlist
+            result["decisions"].append(
+                f"🐗 WATCHLIST+PAPER: {token_symbol} ({mint[:8]}) — [{score.play_type}] "
+                f"permission {score.permission_score}, ordering {score.ordering_score}, "
+                f"primary {len(score.primary_sources)}"
+            )
         elif score.recommendation == "AUTO_EXECUTE":
             # Track graduation plays for daily sublimit
             if score.play_type == "graduation":
@@ -902,8 +972,8 @@ async def scan_token_narrative(
         avg_hourly = volume_24h / 24 if volume_24h > 0 else 0
         volume_ratio = round(volume_1h / avg_hourly, 1) if avg_hourly > 0 else 0
 
-        # Only track if volume spike detected
-        if volume_ratio >= 5.0:
+        # Track if volume spike detected (lowered from 5x to 2x for gradient scoring)
+        if volume_ratio >= 2.0:
             tracker.record_detection(mint)
 
         return {

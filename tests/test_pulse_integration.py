@@ -636,6 +636,10 @@ class TestHeartbeatPulseExtraction:
                     "pulse_sniper_pct": 5.0,
                     "pulse_pro_trader_pct": 18.0,
                     "pulse_deployer_migrations": 0,
+                    "pulse_stage": "bonded",
+                    "pulse_trending_score": 150.0,
+                    "pulse_dexscreener_boosted": True,
+                    "market_cap_usd": 50000.0,
                 },
             ],
             "phase_timing": {},
@@ -664,7 +668,7 @@ class TestHeartbeatPulseExtraction:
                 })
                 existing_mints.add(ms["token_mint"])
 
-        # Pulse extraction
+        # Pulse extraction (matches heartbeat_runner.py pipeline)
         pulse_signals = oracle_result.get("pulse_signals", [])
         for ps in pulse_signals:
             if ps.get("token_mint") and ps["token_mint"] not in existing_mints:
@@ -679,12 +683,16 @@ class TestHeartbeatPulseExtraction:
                     "buyer_depth": _empty_buyer_depth(),
                     "dca_count": 0,
                     "discovery_source": ps.get("discovery_source", "pulse-bonded"),
+                    "market_cap_usd": ps.get("market_cap_usd", 0.0),
                     "pulse_ghost_metadata": ps.get("pulse_ghost_metadata", False),
                     "pulse_organic_ratio": ps.get("pulse_organic_ratio", 1.0),
                     "pulse_bundler_pct": ps.get("pulse_bundler_pct", 0.0),
                     "pulse_sniper_pct": ps.get("pulse_sniper_pct", 0.0),
                     "pulse_pro_trader_pct": ps.get("pulse_pro_trader_pct", 0.0),
                     "pulse_deployer_migrations": ps.get("pulse_deployer_migrations", 0),
+                    "pulse_stage": ps.get("pulse_stage", ""),
+                    "pulse_trending_score": ps.get("pulse_trending_score", 0.0),
+                    "pulse_dexscreener_boosted": ps.get("pulse_dexscreener_boosted", False),
                 })
                 existing_mints.add(ps["token_mint"])
 
@@ -693,13 +701,18 @@ class TestHeartbeatPulseExtraction:
         assert "NANSEN_MINT" in all_mints
         assert "PULSE_MINT" in all_mints
 
-        # Verify pulse signal preserved fields
+        # Verify pulse signal preserved fields (including newly fixed ones)
         pulse_sig = next(s for s in oracle_signals if s["token_mint"] == "PULSE_MINT")
         assert pulse_sig["source"] == "pulse"
         assert pulse_sig["discovery_source"] == "pulse-bonded"
         assert pulse_sig["pulse_ghost_metadata"] is True
         assert pulse_sig["pulse_organic_ratio"] == 0.85
         assert pulse_sig["pulse_pro_trader_pct"] == 18.0
+        # These three fields were previously dropped in the pipeline (bug fix)
+        assert pulse_sig["pulse_stage"] == "bonded"
+        assert pulse_sig["pulse_trending_score"] == 150.0
+        assert pulse_sig["pulse_dexscreener_boosted"] is True
+        assert pulse_sig["market_cap_usd"] == 50000.0
 
     def test_pulse_deduplication(self):
         """Pulse token already in Nansen signals is not duplicated."""
@@ -745,3 +758,81 @@ class TestHeartbeatPulseExtraction:
         # Should only have 1 entry, not duplicated
         assert len(oracle_signals) == 1
         assert oracle_signals[0]["token_mint"] == "SHARED_MINT"
+
+
+# ── Pipeline propagation tests (bug fix verification) ─────────────
+
+
+class TestPipelinePropagation:
+    """Verify pulse_stage, trending_score, ds_boosted reach the scorer."""
+
+    def test_bonded_stage_bonus_applies(self):
+        """Bonded stage bonus (+5) fires when pulse_stage='bonded' is propagated."""
+        scorer = ConvictionScorer()
+        signals = SignalInput(
+            smart_money_whales=0,
+            rug_warden_status="PASS",
+            pulse_organic_ratio=0.8,
+            pulse_pro_trader_pct=12.0,
+            pulse_bundler_pct=2.0,
+            pulse_stage="bonded",
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.play_type == "graduation"
+        assert result.breakdown.get("pulse_bonded_bonus") == 5
+
+    def test_bonded_bonus_absent_without_stage(self):
+        """Without pulse_stage, bonded bonus does NOT fire."""
+        scorer = ConvictionScorer()
+        signals = SignalInput(
+            smart_money_whales=0,
+            rug_warden_status="PASS",
+            pulse_organic_ratio=0.8,
+            pulse_pro_trader_pct=12.0,
+            pulse_bundler_pct=2.0,
+            pulse_stage="",  # Empty — the old buggy default
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.play_type == "graduation"
+        assert result.breakdown.get("pulse_bonded_bonus", 0) == 0
+
+    def test_trending_and_ds_boost_reach_scorer(self):
+        """Trending score and DS boost enrichment bonuses fire from pulse signals."""
+        scorer = ConvictionScorer()
+        signals = SignalInput(
+            smart_money_whales=0,
+            rug_warden_status="PASS",
+            pulse_organic_ratio=0.8,
+            pulse_pro_trader_pct=12.0,
+            pulse_trending_score=200.0,
+            pulse_dexscreener_boosted=True,
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.breakdown.get("enrichment_trending") == 5
+        assert result.breakdown.get("enrichment_ds_boosted") == 5
+
+    def test_full_graduation_with_all_bonuses(self):
+        """Full graduation token with all bonuses scores well above threshold."""
+        scorer = ConvictionScorer()
+        signals = SignalInput(
+            smart_money_whales=0,
+            narrative_volume_spike=5.0,
+            narrative_age_minutes=10,
+            rug_warden_status="PASS",
+            pulse_organic_ratio=0.85,
+            pulse_pro_trader_pct=15.0,
+            pulse_bundler_pct=2.0,
+            pulse_ghost_metadata=True,
+            pulse_stage="bonded",
+            pulse_trending_score=150.0,
+            pulse_dexscreener_boosted=True,
+        )
+        result = scorer.score(signals, pot_balance_sol=14.0)
+        assert result.play_type == "graduation"
+        # Should be well above 55 threshold
+        assert result.permission_score >= 55
+        assert result.recommendation == "AUTO_EXECUTE"
+        # Verify all bonuses present
+        assert result.breakdown.get("pulse_bonded_bonus", 0) > 0
+        assert result.breakdown.get("enrichment_trending", 0) > 0
+        assert result.breakdown.get("enrichment_ds_boosted", 0) > 0

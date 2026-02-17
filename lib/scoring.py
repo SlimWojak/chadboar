@@ -128,15 +128,28 @@ class ConvictionScorer:
         age_minutes: int,
         max_points: int = 30,
     ) -> tuple[int, str]:
-        """Score social momentum + volume signals."""
-        # No signal
-        if volume_spike < 5.0 and not kol_detected:
+        """Score social momentum + volume signals.
+
+        Gradient volume scoring (was binary 5x cutoff):
+          2x = 5pts, 3x = 10pts, 5x = 15pts, 10x = 20pts, 20x+ = 25pts
+        This lets lower-volume candidates still earn partial narrative points,
+        which is critical when whale signals are thin.
+        """
+        # No signal at all
+        if volume_spike < 2.0 and not kol_detected:
             return 0, "No narrative momentum"
 
-        # Base score from volume spike
-        if volume_spike >= 5.0:
-            # Scale: 5x = 15pts, 10x = 25pts, 20x+ = max_points
-            base = min(int((volume_spike / 5.0) * 15), 25)
+        # Gradient volume scoring
+        if volume_spike >= 20.0:
+            base = 25
+        elif volume_spike >= 10.0:
+            base = 20
+        elif volume_spike >= 5.0:
+            base = 15
+        elif volume_spike >= 3.0:
+            base = 10
+        elif volume_spike >= 2.0:
+            base = 5
         else:
             base = 0
 
@@ -155,7 +168,7 @@ class ConvictionScorer:
         score = min(score, max_points)
 
         reasoning_parts = []
-        if volume_spike >= 5.0:
+        if volume_spike >= 2.0:
             reasoning_parts.append(f"{volume_spike:.1f}x volume spike")
         if kol_detected:
             reasoning_parts.append("KOL detected")
@@ -389,7 +402,7 @@ class ConvictionScorer:
             )
             breakdown['narrative_hunter'] = narrative_score
             reasoning_parts.append(f"Narrative: {narrative_reason}")
-            if signals.narrative_volume_spike >= 5.0:
+            if signals.narrative_volume_spike >= 3.0:
                 primary_sources.append("narrative")
 
             # Rug Warden
@@ -427,7 +440,7 @@ class ConvictionScorer:
             )
             breakdown['smart_money_oracle'] = oracle_score
             reasoning_parts.append(f"Oracle: {oracle_reason}")
-            if signals.smart_money_whales >= 3:
+            if signals.smart_money_whales >= 1:
                 primary_sources.append("oracle")
 
             # Narrative
@@ -439,17 +452,17 @@ class ConvictionScorer:
             )
             breakdown['narrative_hunter'] = narrative_score
             reasoning_parts.append(f"Narrative: {narrative_reason}")
-            if signals.narrative_volume_spike >= 5.0:
+            if signals.narrative_volume_spike >= 3.0:
                 primary_sources.append("narrative")
 
-            # Rug Warden
+            # Rug Warden (PASS counts as primary source — enables convergence path)
             warden_score, warden_reason = self.score_rug_warden(
                 signals.rug_warden_status,
                 max_points=weights.get('rug_warden', 20),
             )
             breakdown['rug_warden'] = warden_score
             reasoning_parts.append(f"Warden: {warden_reason}")
-            if signals.rug_warden_status in ["PASS", "WARN"]:
+            if signals.rug_warden_status == "PASS":
                 primary_sources.append("warden")
 
             # Edge Bank
@@ -515,16 +528,18 @@ class ConvictionScorer:
             permission_score -= penalty
             reasoning_parts.append(f"RED FLAG: Exchange inflow ${signals.exchange_outflow_usd:,.0f} — distribution pattern (-{penalty} pts)")
 
-        # RED FLAG 4b: Unsocialized Volume Spike (was VETO 4, downgraded to penalty)
-        # High volume without social confirmation — suspicious but not fatal.
+        # RED FLAG 4b: Unsocialized Volume Spike (reduced from -25 to -5)
+        # With X API disabled, kol_detected is always false. The old -25 penalty
+        # was killing every hot accumulation candidate. Reduced to mild warning —
+        # Rug Warden is the real safety gate, not social confirmation.
         if (play_type == "accumulation"
-                and signals.narrative_volume_spike >= 10.0
+                and signals.narrative_volume_spike >= 20.0
                 and not signals.narrative_kol_detected):
-            penalty = 25
+            penalty = 5
             red_flags['unsocialized_volume'] = -penalty
             permission_score -= penalty
             reasoning_parts.append(
-                f"RED FLAG: {signals.narrative_volume_spike:.0f}x volume spike "
+                f"MILD FLAG: {signals.narrative_volume_spike:.0f}x volume spike "
                 f"with no social confirmation (-{penalty} pts)"
             )
 
