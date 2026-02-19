@@ -63,6 +63,8 @@ def log_paper_trade(candidate: dict[str, Any]) -> dict[str, Any]:
         "breakdown": score_data.get("breakdown", {}),
         "red_flags": score_data.get("red_flags", {}),
         "warden_verdict": candidate.get("warden", {}).get("verdict", "UNKNOWN"),
+        "verdict_bead_id": candidate.get("verdict_bead_id", ""),
+        "trade_bead_id": "",
         "pnl_checks": [],
         "closed": False,
     }
@@ -74,7 +76,19 @@ def log_paper_trade(candidate: dict[str, Any]) -> dict[str, Any]:
     return trade
 
 
-async def check_paper_trades() -> dict[str, Any]:
+def update_trade_bead_id(trade_id: str, trade_bead_id: str, verdict_bead_id: str = "") -> None:
+    """Patch a paper trade record with structured bead IDs."""
+    trades = _load_trades()
+    for t in trades:
+        if t["id"] == trade_id:
+            t["trade_bead_id"] = trade_bead_id
+            if verdict_bead_id:
+                t["verdict_bead_id"] = verdict_bead_id
+            break
+    _save_trades(trades)
+
+
+async def check_paper_trades(bead_chain: Any = None) -> dict[str, Any]:
     """Check current prices for open paper trades and record PnL snapshots."""
     from lib.clients.birdeye import BirdeyeClient
 
@@ -91,12 +105,14 @@ async def check_paper_trades() -> dict[str, Any]:
     now_epoch = int(now.timestamp())
 
     # Batch-close stale trades (>6h) without API calls
+    closed_trades = []
     for trade in open_trades:
         age_minutes = (now_epoch - trade["entry_epoch"]) / 60
         if age_minutes >= 360:
             trade["closed"] = True
             trade["close_reason"] = "6h_expiry"
             expired += 1
+            closed_trades.append(trade)
 
     # Check PnL on the 10 most recent still-open trades (cap API calls)
     still_open = [t for t in open_trades if not t.get("closed")]
@@ -131,7 +147,65 @@ async def check_paper_trades() -> dict[str, Any]:
                 pass  # Token may have been rugged/delisted
 
         _save_trades(trades)
-        return {"status": "OK", "open": len(still_open), "checked": checked, "expired": expired}
+
+        # Emit autopsy beads for closed trades (best-effort)
+        autopsies = 0
+        if bead_chain and closed_trades:
+            try:
+                from lib.beads import (
+                    Bead, BeadHeader, BeadType, BeadEdges,
+                    AutopsyPayload,
+                )
+                for trade in closed_trades:
+                    t_bead_id = trade.get("trade_bead_id", "")
+                    v_bead_id = trade.get("verdict_bead_id", "")
+                    if not t_bead_id:
+                        continue  # Pre-wiring trade, skip
+
+                    # Determine final PnL from last check
+                    checks = trade.get("pnl_checks", [])
+                    final_pnl = checks[-1]["pnl_pct"] if checks else 0.0
+                    exit_fdv = checks[-1].get("current_fdv", 0) if checks else 0.0
+                    hold_secs = now_epoch - trade.get("entry_epoch", now_epoch)
+
+                    # PnL → stance: positive supports conviction, negative contradicts
+                    if final_pnl >= 0:
+                        edges = BeadEdges(
+                            derived_from=[t_bead_id],
+                            supports=[v_bead_id] if v_bead_id else [t_bead_id],
+                        )
+                    else:
+                        edges = BeadEdges(
+                            derived_from=[t_bead_id],
+                            contradicts=[v_bead_id] if v_bead_id else [t_bead_id],
+                        )
+
+                    try:
+                        autopsy = Bead(
+                            header=BeadHeader(bead_type=BeadType.AUTOPSY),
+                            edges=edges,
+                            payload=AutopsyPayload(
+                                trade_bead_id=t_bead_id,
+                                pnl_pct=final_pnl,
+                                exit_price=exit_fdv,
+                                exit_reason=trade.get("close_reason", "6h_expiry"),
+                                hold_duration_seconds=hold_secs,
+                                lesson=f"Paper {'win' if final_pnl >= 0 else 'loss'}: "
+                                       f"{trade.get('token_symbol', '?')} "
+                                       f"{final_pnl:+.1f}% over {hold_secs // 60}min",
+                            ),
+                        )
+                        bead_chain.write_bead(autopsy)
+                        autopsies += 1
+                    except Exception:
+                        pass  # Individual autopsy failure shouldn't block others
+            except Exception:
+                pass  # Bead import or chain failure
+
+        return {
+            "status": "OK", "open": len(still_open), "checked": checked,
+            "expired": expired, "autopsies": autopsies,
+        }
     finally:
         await birdeye.close()
 

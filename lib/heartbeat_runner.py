@@ -30,10 +30,21 @@ from lib.skills.paper_trade import (
     log_paper_trade,
     check_paper_trades,
     write_paper_bead,
+    update_trade_bead_id,
 )
 from lib.llm_utils import call_grok
 
 import httpx
+
+# Structured bead chain — best-effort, never blocks pipeline
+try:
+    from lib.beads import (
+        BeadChain, Bead, BeadHeader, BeadType, BeadEdges, BeadProvenance,
+        VerdictPayload, TradePayload, HeartbeatPayload,
+    )
+    _BEADS_AVAILABLE = True
+except ImportError:
+    _BEADS_AVAILABLE = False
 
 
 def build_health_line(result: dict[str, Any]) -> str:
@@ -151,6 +162,14 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     
     dry_run = state.get("dry_run_mode", True)
     cycle_num = state.get("dry_run_cycles_completed", 0) + 1
+
+    # Init structured bead chain (best-effort)
+    bead_chain = None
+    if _BEADS_AVAILABLE:
+        try:
+            bead_chain = BeadChain()
+        except Exception:
+            pass
     
     # Funnel diagnostics — tracks signal flow for flight recorder
     funnel = {
@@ -703,6 +722,35 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             },
         }
 
+        # Emit verdict bead (structured chain — best-effort)
+        verdict_bead_id = ""
+        if bead_chain:
+            try:
+                _rec = score.recommendation
+                _wv = rug_status if rug_status in ("PASS", "WARN", "FAIL") else "UNKNOWN"
+                verdict_bead = Bead(
+                    header=BeadHeader(bead_type=BeadType.VERDICT),
+                    edges=BeadEdges(edges_complete=False,
+                                    edges_incomplete_reason="signal beads not yet emitted"),
+                    provenance=BeadProvenance(
+                        data_sources=result.get("source_health", {}),
+                    ),
+                    payload=VerdictPayload(
+                        token_mint=mint,
+                        token_symbol=opportunity["token_symbol"],
+                        play_type=score.play_type,
+                        scoring_breakdown=score.breakdown,
+                        conviction_score=score.permission_score,
+                        recommendation=_rec,
+                        warden_verdict=_wv,
+                        red_flags=score.red_flags if isinstance(score.red_flags, dict) else {"flags": score.red_flags},
+                    ),
+                )
+                verdict_bead_id = bead_chain.write_bead(verdict_bead)
+            except Exception:
+                pass
+        opportunity["verdict_bead_id"] = verdict_bead_id
+
         result["opportunities"].append(opportunity)
 
         # Funnel: track verdict counts
@@ -743,6 +791,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         "red_flags": score.red_flags,
                     },
                     "warden": {"verdict": rug_status},
+                    "verdict_bead_id": verdict_bead_id,
                 }
                 trade_record = log_paper_trade(paper_candidate)
                 # Write analysis bead for warden-passing paper trades
@@ -751,6 +800,31 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         write_paper_bead(trade_record)
                     except Exception:
                         pass  # Best-effort bead writing
+                # Emit structured trade bead
+                if bead_chain and verdict_bead_id:
+                    try:
+                        _wv = rug_status if rug_status in ("PASS", "WARN", "FAIL") else "UNKNOWN"
+                        trade_bead = Bead(
+                            header=BeadHeader(bead_type=BeadType.TRADE),
+                            edges=BeadEdges(derived_from=[verdict_bead_id]),
+                            payload=TradePayload(
+                                token_mint=mint,
+                                token_symbol=token_symbol,
+                                play_type=score.play_type,
+                                scoring_breakdown=score.breakdown,
+                                conviction_score=score.permission_score,
+                                recommendation=score.recommendation,
+                                warden_verdict=_wv,
+                                red_flags=score.red_flags if isinstance(score.red_flags, dict) else {"flags": score.red_flags},
+                                entry_price=trade_record.get("entry_price_fdv", 0),
+                                entry_amount_sol=0.0,
+                                gate="paper",
+                            ),
+                        )
+                        trade_bead_id = bead_chain.write_bead(trade_bead)
+                        update_trade_bead_id(trade_record["id"], trade_bead_id, verdict_bead_id)
+                    except Exception:
+                        pass
                 result["decisions"].append(
                     f"🐗📝 PAPER: {token_symbol} ({mint[:8]}) — [{score.play_type}] "
                     f"permission {score.permission_score}, ordering {score.ordering_score}"
@@ -782,6 +856,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         "red_flags": score.red_flags,
                     },
                     "warden": {"verdict": rug_status},
+                    "verdict_bead_id": verdict_bead_id,
                 }
                 trade_record = log_paper_trade(paper_candidate)
                 # Write analysis bead for warden-passing watchlist trades
@@ -790,6 +865,31 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         write_paper_bead(trade_record)
                     except Exception:
                         pass  # Best-effort bead writing
+                # Emit structured trade bead
+                if bead_chain and verdict_bead_id:
+                    try:
+                        _wv = rug_status if rug_status in ("PASS", "WARN", "FAIL") else "UNKNOWN"
+                        trade_bead = Bead(
+                            header=BeadHeader(bead_type=BeadType.TRADE),
+                            edges=BeadEdges(derived_from=[verdict_bead_id]),
+                            payload=TradePayload(
+                                token_mint=mint,
+                                token_symbol=token_symbol,
+                                play_type=score.play_type,
+                                scoring_breakdown=score.breakdown,
+                                conviction_score=score.permission_score,
+                                recommendation=score.recommendation,
+                                warden_verdict=_wv,
+                                red_flags=score.red_flags if isinstance(score.red_flags, dict) else {"flags": score.red_flags},
+                                entry_price=trade_record.get("entry_price_fdv", 0),
+                                entry_amount_sol=0.0,
+                                gate="paper",
+                            ),
+                        )
+                        trade_bead_id = bead_chain.write_bead(trade_bead)
+                        update_trade_bead_id(trade_record["id"], trade_bead_id, verdict_bead_id)
+                    except Exception:
+                        pass
             except Exception:
                 pass  # Best-effort paper logging for watchlist
             result["decisions"].append(
@@ -820,7 +920,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
 
     # Step 12b: Check PnL on open paper trades (every cycle)
     try:
-        pnl_result = await check_paper_trades()
+        pnl_result = await check_paper_trades(bead_chain=bead_chain)
         result["paper_pnl_checked"] = pnl_result.get("checked", 0)
     except Exception as e:
         result["errors"].append(f"Paper PnL check failed: {e}")
@@ -840,7 +940,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
 
     safe_write_json(state_path, state)
 
-    # Append heartbeat chain bead (Flight Recorder)
+    # Append heartbeat chain bead (Flight Recorder — legacy)
     try:
         import hashlib
         from lib.chain.bead_chain import append_bead as chain_append
@@ -859,6 +959,41 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         })
     except Exception:
         pass  # Chain is best-effort
+
+    # Structured heartbeat bead (new bead chain)
+    if bead_chain:
+        try:
+            _source_health = {}
+            oh = result.get("oracle_health", {})
+            if oh.get("nansen_error"):
+                _source_health["nansen"] = "ERR"
+            else:
+                _source_health["nansen"] = "OK"
+            _source_health["dexscreener"] = oh.get("narrative_source", "OK")
+            _source_health["birdeye"] = oh.get("birdeye_status", "SKIP")
+            _source_health["whale"] = "OK" if oh.get("whale_count", 0) > 0 else "EMPTY"
+
+            hb_bead = Bead(
+                header=BeadHeader(bead_type=BeadType.HEARTBEAT),
+                provenance=BeadProvenance(data_sources=_source_health),
+                payload=HeartbeatPayload(
+                    cycle_number=cycle_num,
+                    signals_found=funnel.get("reached_scorer", 0),
+                    signals_vetoed=funnel.get("scored_veto", 0),
+                    signals_passed=funnel.get("scored_paper_trade", 0)
+                                   + funnel.get("scored_watchlist", 0)
+                                   + funnel.get("scored_execute", 0),
+                    pot_sol=state.get("current_balance_sol", 0),
+                    positions_count=len(state.get("positions", [])),
+                    pipeline_health=_source_health,
+                    canary_hash=hashlib.sha256(
+                        json.dumps(state, sort_keys=True).encode()
+                    ).hexdigest()[:12],
+                ),
+            )
+            bead_chain.write_bead(hb_bead)
+        except Exception:
+            pass  # Best-effort
 
     result["state_updated"] = True
     result["next_cycle"] = cycle_num + 1
