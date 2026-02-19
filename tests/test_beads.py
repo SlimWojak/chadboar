@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pytest
@@ -178,14 +180,13 @@ class TestEdgeDiscipline:
         bead = _make_verdict(derived=["signal_id"])
         assert bead.edges.edges_complete is True
 
-    def test_autopsy_without_support_or_contradict_marks_incomplete(self):
-        bead = Bead(
-            header=BeadHeader(bead_type=BeadType.AUTOPSY),
-            edges=BeadEdges(derived_from=["trade_id"]),
-            payload=AutopsyPayload(trade_bead_id="trade_id"),
-        )
-        assert bead.edges.edges_complete is False
-        assert "support or contradict" in bead.edges.edges_incomplete_reason
+    def test_autopsy_without_support_or_contradict_raises(self):
+        with pytest.raises(ValueError, match="supports.*contradicts"):
+            Bead(
+                header=BeadHeader(bead_type=BeadType.AUTOPSY),
+                edges=BeadEdges(derived_from=["trade_id"]),
+                payload=AutopsyPayload(trade_bead_id="trade_id"),
+            )
 
     def test_autopsy_with_support_stays_complete(self):
         bead = Bead(
@@ -412,6 +413,73 @@ class TestChainQuery:
 
         linked = tmp_chain.query_by_edge(sig_id)
         assert len(linked) == 2
+
+    def test_query_by_type_since(self, tmp_chain):
+        # Write old bead with explicit past timestamp
+        old = Bead(
+            header=BeadHeader(
+                bead_type=BeadType.SIGNAL,
+                timestamp="2026-01-01T00:00:00+00:00",
+            ),
+            payload=SignalPayload(
+                token_mint="OLD", token_symbol="OLD",
+                play_type="graduation", discovery_source="test",
+            ),
+        )
+        tmp_chain.write_bead(old)
+        # Write recent bead (auto-timestamp = now)
+        tmp_chain.write_bead(_make_signal(symbol="NEW"))
+
+        # Query all — should get both
+        all_signals = tmp_chain.query_by_type(BeadType.SIGNAL)
+        assert len(all_signals) == 2
+
+        # Query since yesterday — should get only the recent one
+        yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+        recent = tmp_chain.query_by_type(BeadType.SIGNAL, since=yesterday)
+        assert len(recent) == 1
+        assert recent[0].payload.token_symbol == "NEW"
+
+    def test_query_by_token_since(self, tmp_chain):
+        old = Bead(
+            header=BeadHeader(
+                bead_type=BeadType.SIGNAL,
+                timestamp="2026-01-01T00:00:00+00:00",
+            ),
+            payload=SignalPayload(
+                token_mint="MINT_X", token_symbol="X",
+                play_type="graduation", discovery_source="test",
+            ),
+        )
+        tmp_chain.write_bead(old)
+        tmp_chain.write_bead(_make_signal(mint="MINT_X", symbol="X"))
+
+        yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+        recent = tmp_chain.query_by_token("MINT_X", since=yesterday)
+        assert len(recent) == 1
+
+    def test_query_by_edge_since(self, tmp_chain):
+        sig_id = tmp_chain.write_bead(_make_signal())
+        # Write a verdict with old timestamp referencing the signal
+        old_verdict = Bead(
+            header=BeadHeader(
+                bead_type=BeadType.VERDICT,
+                timestamp="2026-01-01T00:00:00+00:00",
+            ),
+            edges=BeadEdges(derived_from=[sig_id]),
+            payload=VerdictPayload(
+                token_mint="So111", token_symbol="T",
+                play_type="graduation", conviction_score=50,
+                recommendation="PAPER_TRADE", warden_verdict="PASS",
+            ),
+        )
+        tmp_chain.write_bead(old_verdict)
+        # Write a recent verdict also referencing the signal
+        tmp_chain.write_bead(_make_verdict(derived=[sig_id]))
+
+        yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+        recent = tmp_chain.query_by_edge(sig_id, since=yesterday)
+        assert len(recent) == 1
 
 
 class TestChainVerify:

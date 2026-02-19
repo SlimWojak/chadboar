@@ -271,13 +271,15 @@ class Bead(BaseModel):
             trade_ref = self.payload.trade_bead_id
             if trade_ref and trade_ref not in self.edges.derived_from:
                 self.edges.derived_from.append(trade_ref)
-            # Autopsy must support or contradict the original verdict
+            # Autopsy MUST support or contradict the original verdict.
+            # This is the most valuable edge for SkillRL distillation —
+            # "I predicted X, reality was Y, was I right?"
             if not self.edges.supports and not self.edges.contradicts:
-                self.edges.edges_complete = False
-                if not self.edges.edges_incomplete_reason:
-                    self.edges.edges_incomplete_reason = (
-                        "autopsy should support or contradict original verdict"
-                    )
+                raise ValueError(
+                    "Autopsy bead must declare at least one 'supports' or "
+                    "'contradicts' edge referencing the original verdict. "
+                    "This edge is required for the learning loop."
+                )
 
         return self
 

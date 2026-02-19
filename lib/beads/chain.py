@@ -18,6 +18,7 @@ import json
 import sqlite3
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -180,31 +181,57 @@ class BeadChain:
     # ── Query ──────────────────────────────────────────────────────────
 
     def query_by_type(
-        self, bead_type: BeadType | str, limit: int = 50
+        self,
+        bead_type: BeadType | str,
+        limit: int = 50,
+        since: datetime | None = None,
     ) -> list[Bead]:
         """Get beads of a specific type, most recent first."""
         type_val = bead_type.value if isinstance(bead_type, BeadType) else bead_type
         conn = self._conn()
-        rows = conn.execute(
-            "SELECT full_bead FROM beads WHERE bead_type = ? "
-            "ORDER BY seq DESC LIMIT ?",
-            (type_val, limit),
-        ).fetchall()
+        if since:
+            rows = conn.execute(
+                "SELECT full_bead FROM beads WHERE bead_type = ? "
+                "AND timestamp >= ? ORDER BY seq DESC LIMIT ?",
+                (type_val, since.isoformat(), limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT full_bead FROM beads WHERE bead_type = ? "
+                "ORDER BY seq DESC LIMIT ?",
+                (type_val, limit),
+            ).fetchall()
         conn.close()
         return [Bead.from_chain_dict(json.loads(r[0])) for r in rows]
 
-    def query_by_token(self, token_mint: str, limit: int = 50) -> list[Bead]:
+    def query_by_token(
+        self,
+        token_mint: str,
+        limit: int = 50,
+        since: datetime | None = None,
+    ) -> list[Bead]:
         """Get all beads for a specific token, most recent first."""
         conn = self._conn()
-        rows = conn.execute(
-            "SELECT full_bead FROM beads WHERE token_mint = ? "
-            "ORDER BY seq DESC LIMIT ?",
-            (token_mint, limit),
-        ).fetchall()
+        if since:
+            rows = conn.execute(
+                "SELECT full_bead FROM beads WHERE token_mint = ? "
+                "AND timestamp >= ? ORDER BY seq DESC LIMIT ?",
+                (token_mint, since.isoformat(), limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT full_bead FROM beads WHERE token_mint = ? "
+                "ORDER BY seq DESC LIMIT ?",
+                (token_mint, limit),
+            ).fetchall()
         conn.close()
         return [Bead.from_chain_dict(json.loads(r[0])) for r in rows]
 
-    def query_by_edge(self, bead_id: str) -> list[Bead]:
+    def query_by_edge(
+        self,
+        bead_id: str,
+        since: datetime | None = None,
+    ) -> list[Bead]:
         """Find all beads that reference bead_id in any edge field.
 
         Searches derived_from, supports, and contradicts edges.
@@ -214,11 +241,18 @@ class BeadChain:
         # This is a text search — sufficient for hex hashes that won't
         # appear as substrings of other data
         pattern = f"%{bead_id}%"
-        rows = conn.execute(
-            "SELECT full_bead FROM beads WHERE edges LIKE ? "
-            "ORDER BY seq DESC",
-            (pattern,),
-        ).fetchall()
+        if since:
+            rows = conn.execute(
+                "SELECT full_bead FROM beads WHERE edges LIKE ? "
+                "AND timestamp >= ? ORDER BY seq DESC",
+                (pattern, since.isoformat()),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT full_bead FROM beads WHERE edges LIKE ? "
+                "ORDER BY seq DESC",
+                (pattern,),
+            ).fetchall()
         conn.close()
 
         # Post-filter: confirm the bead_id is actually in an edge list

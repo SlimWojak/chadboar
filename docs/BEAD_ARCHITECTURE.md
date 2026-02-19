@@ -37,9 +37,11 @@ Edges are mandatory. Every bead must declare its lineage:
 Special rules:
 - Heartbeat beads derive from the previous heartbeat (chain manager sets this)
 - Autopsy beads must reference their trade bead in derived_from
-- Autopsy beads should support or contradict the original verdict
+- Autopsy beads **must** declare at least one `supports` or `contradicts` edge
+  (hard-enforced — raises `ValueError` if missing). This is the most valuable
+  edge for SkillRL distillation: "I predicted X, reality was Y, was I right?"
 
-If edges can't be fully populated, `edges_complete=False` with a reason.
+If other edges can't be fully populated, `edges_complete=False` with a reason.
 
 ## Chain Manager
 
@@ -68,10 +70,13 @@ bead_id = chain.write_bead(bead)  # returns SHA-256 hex
 bead = chain.get_bead(bead_id)
 head = chain.get_chain_head()
 
-# Query
-signals = chain.query_by_type(BeadType.SIGNAL, limit=50)
-token_beads = chain.query_by_token("So111...", limit=50)
-linked = chain.query_by_edge(bead_id)  # beads referencing this one
+# Query (all support optional `since` datetime filter)
+from datetime import datetime, timezone, timedelta
+yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+
+signals = chain.query_by_type(BeadType.SIGNAL, limit=50, since=yesterday)
+token_beads = chain.query_by_token("So111...", limit=50, since=yesterday)
+linked = chain.query_by_edge(bead_id, since=yesterday)
 
 # Verify
 result = chain.verify_chain()  # ChainVerifyResult(valid, total, verified, message)
