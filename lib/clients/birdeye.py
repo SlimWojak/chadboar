@@ -87,9 +87,9 @@ class BirdeyeClient:
         return await self._client.get(
             "/defi/tokenlist",
             params={
-                "sort_by": "v24hChangePercent",
-                "sort_type": "desc",
-                "min_liquidity": min_liquidity,
+                "sortBy": "v24hChangePercent",
+                "sortType": "desc",
+                "minLiquidity": min_liquidity,
                 "limit": min(limit, 50),
             },
             cache_ttl=60,

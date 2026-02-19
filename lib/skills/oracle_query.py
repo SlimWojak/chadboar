@@ -450,8 +450,13 @@ async def _run_mobula_scan(
 
     mobula_signals: list[dict[str, Any]] = []
     for data in results:
-        if isinstance(data, dict) and data.get('accum_24h_usd', 0) > 10000:
-            mobula_signals.append(data)
+        if isinstance(data, dict):
+            accum = data.get('accum_24h_usd', 0)
+            wallet_short = data.get('wallet', '?')[:12]
+            if accum > 1000:
+                mobula_signals.append(data)
+            else:
+                _log(f"Whale filtered: {wallet_short}… accum=${accum:,.0f} (need >$1k)")
 
     _source_health["whale_active"] = len(mobula_signals)
     phase_timing["mobula_networth"] = round(time.monotonic() - t0, 1)

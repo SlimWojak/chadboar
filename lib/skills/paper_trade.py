@@ -71,14 +71,7 @@ def log_paper_trade(candidate: dict[str, Any]) -> dict[str, Any]:
     trades.append(trade)
     _save_trades(trades)
 
-    return {
-        "status": "OK",
-        "action": "logged",
-        "trade_id": trade["id"],
-        "token": trade["token_symbol"],
-        "score": trade["permission_score"],
-        "entry_fdv": entry_price,
-    }
+    return trade
 
 
 async def check_paper_trades() -> dict[str, Any]:
@@ -93,11 +86,24 @@ async def check_paper_trades() -> dict[str, Any]:
 
     birdeye = BirdeyeClient()
     checked = 0
+    expired = 0
     now = datetime.now(timezone.utc)
     now_epoch = int(now.timestamp())
 
+    # Batch-close stale trades (>6h) without API calls
+    for trade in open_trades:
+        age_minutes = (now_epoch - trade["entry_epoch"]) / 60
+        if age_minutes >= 360:
+            trade["closed"] = True
+            trade["close_reason"] = "6h_expiry"
+            expired += 1
+
+    # Check PnL on the 10 most recent still-open trades (cap API calls)
+    still_open = [t for t in open_trades if not t.get("closed")]
+    recent = sorted(still_open, key=lambda t: t["entry_epoch"], reverse=True)[:10]
+
     try:
-        for trade in open_trades:
+        for trade in recent:
             age_minutes = (now_epoch - trade["entry_epoch"]) / 60
 
             try:
@@ -121,17 +127,11 @@ async def check_paper_trades() -> dict[str, Any]:
                 trade.setdefault("pnl_checks", []).append(snapshot)
                 checked += 1
 
-                # Auto-close after 6h
-                if age_minutes >= 360:
-                    trade["closed"] = True
-                    trade["close_reason"] = "6h_expiry"
-                    trade["final_pnl_pct"] = pnl_pct
-
             except Exception:
                 pass  # Token may have been rugged/delisted
 
         _save_trades(trades)
-        return {"status": "OK", "open": len(open_trades), "checked": checked}
+        return {"status": "OK", "open": len(still_open), "checked": checked, "expired": expired}
     finally:
         await birdeye.close()
 
@@ -212,7 +212,7 @@ def write_paper_bead(trade: dict[str, Any]) -> None:
         warden_verdict=trade.get("warden_verdict", "UNKNOWN"),
         extra={"paper": True, "red_flags": trade.get("red_flags", {})},
     )
-    bank.write(bead)
+    bank.write_bead(bead)
 
 
 def main() -> None:

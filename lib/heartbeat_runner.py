@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from lib.clients.birdeye import BirdeyeClient
+from lib.clients.dexscreener import DexScreenerClient
 from lib.scoring import ConvictionScorer, SignalInput, detect_play_type
 from lib.utils.narrative_tracker import NarrativeTracker
 from lib.utils.async_batch import batch_price_fetch
@@ -24,7 +25,12 @@ from lib.utils.file_lock import safe_read_json, safe_write_json
 from lib.utils.red_flags import check_concentrated_volume
 from lib.skills.warden_check import check_token
 from lib.skills.oracle_query import query_oracle, _empty_flow_intel, _empty_buyer_depth
-from lib.skills.paper_trade import _load_trades as _load_paper_trades, log_paper_trade
+from lib.skills.paper_trade import (
+    _load_trades as _load_paper_trades,
+    log_paper_trade,
+    check_paper_trades,
+    write_paper_bead,
+)
 from lib.llm_utils import call_grok
 
 import httpx
@@ -47,10 +53,16 @@ def build_health_line(result: dict[str, Any]) -> str:
         nan_raw = oh.get("nansen_raw_trades", funnel.get("nansen_raw", 0))
         nan_part = f"Nan:{nan_cand}/{nan_raw}"
 
-    # Birdeye: narrative spike count / status
-    birdeye_status = result.get("birdeye_status", "OK")
+    # Narrative: spike count / source status
+    dexs_status = result.get("dexscreener_status", "")
+    birdeye_status = result.get("birdeye_status", "SKIP")
     spike_count = funnel.get("narrative_with_spike", 0)
-    bird_part = f"Bird:{spike_count}/{birdeye_status}"
+    if dexs_status == "OK":
+        bird_part = f"Nar:{spike_count}/DexS"
+    elif birdeye_status not in ("SKIP", ""):
+        bird_part = f"Nar:{spike_count}/Bird:{birdeye_status}"
+    else:
+        bird_part = f"Nar:{spike_count}/ERR"
 
     # Pulse/DexScreener: filtered / raw (dynamic label)
     pulse_source = oh.get("pulse_source", "dexscreener")
@@ -312,43 +324,83 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         funnel["pulse_filtered"] = len([s for s in pulse_sigs if s.get("token_mint")])
 
     # Step 6: Narrative Hunter (on-chain volume only — X API disabled)
+    # Primary: DexScreener (free). Fallback: Birdeye (paid).
     narrative_failed = False
-    birdeye = BirdeyeClient()
     narrative_tracker = NarrativeTracker()
-    birdeye_status = "OK"
+    birdeye_status = "SKIP"
+    dexscreener_status = "OK"
+    narrative_signals = []
 
+    # Primary: DexScreener — volume spikes from free API
+    dexscreener_narrative = DexScreenerClient()
     try:
-        # Get new/small-cap tokens instead of large-cap trending
-        new_pairs = await birdeye.get_new_pairs(limit=20)
-        tokens = new_pairs.get("data", new_pairs.get("items", []))
-
-        narrative_signals = []
-        for token_data in (tokens[:10] if isinstance(tokens, list) else []):
-            mint = token_data.get("address", token_data.get("baseAddress", ""))
+        dex_candidates = await dexscreener_narrative.get_solana_candidates()
+        for raw in (dex_candidates[:20] if isinstance(dex_candidates, list) else []):
+            mint = raw.get("tokenAddress", "")
             if not mint:
                 continue
+            symbol = raw.get("token_symbol", raw.get("token_name", "UNKNOWN"))
+            vol_1h = float(raw.get("volume_1h", 0))
+            vol_24h = float(raw.get("volume_24h", 0))
+            avg_hourly = vol_24h / 24 if vol_24h > 0 else 0
+            volume_ratio = round(vol_1h / avg_hourly, 1) if avg_hourly > 0 else 0
 
-            # Scan narrative for this token (on-chain volume only)
-            signal = await scan_token_narrative(mint, birdeye, narrative_tracker)
-            if signal:
-                narrative_signals.append(signal)
+            if volume_ratio >= 2.0:
+                narrative_tracker.record_detection(mint)
+
+            narrative_signals.append({
+                "token_mint": mint,
+                "token_symbol": symbol,
+                "x_mentions_1h": 0,
+                "kol_mentions": 0,
+                "volume_vs_avg": f"{volume_ratio}x",
+            })
 
         result["narrative_signals"] = narrative_signals
-    except httpx.HTTPStatusError as e:
-        birdeye_status = str(e.response.status_code)
-        result["errors"].append(f"Narrative error: {e}")
-        narrative_signals = []
-        narrative_failed = True
-        result["sources_failed"].append("narrative")
     except Exception as e:
-        birdeye_status = "ERR"
-        result["errors"].append(f"Narrative error: {e}")
+        dexscreener_status = "ERR"
+        result["errors"].append(f"DexScreener narrative error: {e}")
         narrative_signals = []
-        narrative_failed = True
-        result["sources_failed"].append("narrative")
+
+        # Fallback: Birdeye (paid)
+        birdeye = BirdeyeClient()
+        try:
+            new_pairs = await birdeye.get_new_pairs(limit=20)
+            tokens = new_pairs.get("data", new_pairs.get("items", []))
+            birdeye_status = "OK"
+
+            for token_data in (tokens[:10] if isinstance(tokens, list) else []):
+                mint = token_data.get("address", token_data.get("baseAddress", ""))
+                if not mint:
+                    continue
+                signal = await scan_token_narrative(mint, birdeye, narrative_tracker)
+                if signal:
+                    narrative_signals.append(signal)
+
+            result["narrative_signals"] = narrative_signals
+        except httpx.HTTPStatusError as e:
+            resp_body = ""
+            try:
+                resp_body = e.response.text[:500]
+            except Exception:
+                pass
+            birdeye_status = str(e.response.status_code)
+            result["errors"].append(f"Birdeye fallback error: {e} | body: {resp_body}")
+            narrative_signals = []
+            narrative_failed = True
+            result["sources_failed"].append("narrative")
+        except Exception as e:
+            birdeye_status = "ERR"
+            result["errors"].append(f"Birdeye fallback error: {e}")
+            narrative_signals = []
+            narrative_failed = True
+            result["sources_failed"].append("narrative")
+        finally:
+            await birdeye.close()
     finally:
-        await birdeye.close()
+        await dexscreener_narrative.close()
     result["birdeye_status"] = birdeye_status
+    result["dexscreener_status"] = dexscreener_status
     
     # Funnel: narrative counts
     funnel["narrative_raw"] = len(narrative_signals)
@@ -692,7 +744,13 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     },
                     "warden": {"verdict": rug_status},
                 }
-                log_paper_trade(paper_candidate)
+                trade_record = log_paper_trade(paper_candidate)
+                # Write analysis bead for warden-passing paper trades
+                if rug_status in ("PASS", "WARN"):
+                    try:
+                        write_paper_bead(trade_record)
+                    except Exception:
+                        pass  # Best-effort bead writing
                 result["decisions"].append(
                     f"🐗📝 PAPER: {token_symbol} ({mint[:8]}) — [{score.play_type}] "
                     f"permission {score.permission_score}, ordering {score.ordering_score}"
@@ -725,7 +783,13 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     },
                     "warden": {"verdict": rug_status},
                 }
-                log_paper_trade(paper_candidate)
+                trade_record = log_paper_trade(paper_candidate)
+                # Write analysis bead for warden-passing watchlist trades
+                if rug_status in ("PASS", "WARN"):
+                    try:
+                        write_paper_bead(trade_record)
+                    except Exception:
+                        pass  # Best-effort bead writing
             except Exception:
                 pass  # Best-effort paper logging for watchlist
             result["decisions"].append(
@@ -753,7 +817,15 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     
     # Close red flag client after loop
     await birdeye_red_flags.close()
-    
+
+    # Step 12b: Check PnL on open paper trades (every cycle)
+    try:
+        pnl_result = await check_paper_trades()
+        result["paper_pnl_checked"] = pnl_result.get("checked", 0)
+    except Exception as e:
+        result["errors"].append(f"Paper PnL check failed: {e}")
+        result["paper_pnl_checked"] = 0
+
     # Step 13: Update state with file locking (R5 fix)
     if dry_run:
         state["dry_run_cycles_completed"] = cycle_num
