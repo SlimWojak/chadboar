@@ -863,6 +863,18 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     result["state_updated"] = True
     result["next_cycle"] = cycle_num + 1
 
+    # Execution canary — proof that heartbeat_runner.py actually ran.
+    # Watchdog checks this file's mtime to detect hallucinated heartbeats.
+    canary_path = Path("state/last_real_hb.txt")
+    try:
+        import hashlib as _hl
+        _canary_hash = _hl.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()[:12]
+        canary_path.write_text(
+            f"{datetime.utcnow().isoformat()}|cycle={cycle_num + 1}|hash={_canary_hash}\n"
+        )
+    except Exception:
+        pass  # Best-effort canary
+
     try:
         result["paper_open"] = len([t for t in _load_paper_trades() if not t.get("closed")])
     except Exception:

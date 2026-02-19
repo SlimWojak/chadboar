@@ -158,6 +158,25 @@ print(int(dt.timestamp()))
 fi
 
 # ============================================================
+# CHECK 2b: Execution canary — detect hallucinated heartbeats
+# ============================================================
+# heartbeat_runner.py writes state/last_real_hb.txt on every REAL execution.
+# If this file is stale but the cron says "ok", the agent hallucinated.
+CANARY_FILE="$WORKSPACE/state/last_real_hb.txt"
+CANARY_STALE_MINUTES=15
+
+if [ "$gateway_alive" = true ] && [ -f "$CANARY_FILE" ]; then
+    canary_age_sec=$(( $(date -u +%s) - $(stat -c%Y "$CANARY_FILE" 2>/dev/null || echo 0) ))
+    canary_age_min=$(( canary_age_sec / 60 ))
+    if [ "$canary_age_min" -ge "$CANARY_STALE_MINUTES" ]; then
+        log "CANARY: last_real_hb.txt is ${canary_age_min}min old — heartbeat may be hallucinated"
+        tg_alert "$(printf '\xF0\x9F\x9A\xA8') CANARY: Heartbeat execution canary stale (${canary_age_min}min). Agent may be hallucinating heartbeats. Manual check needed."
+    fi
+elif [ "$gateway_alive" = true ] && [ ! -f "$CANARY_FILE" ]; then
+    log "CANARY: last_real_hb.txt missing — first run or canary not yet deployed"
+fi
+
+# ============================================================
 # CHECK 3: Session collapse detection
 # ============================================================
 if [ "$gateway_alive" = true ] && [ -d "$SESSIONS_DIR" ]; then
