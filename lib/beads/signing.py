@@ -6,7 +6,7 @@ The node signing key is autistboar-owned — if an attacker has process access,
 they can already write arbitrary beads, so root isolation adds no security.
 
 Key paths:
-  Private: /etc/autistboar/node_signing.key (chmod 400, autistboar:autistboar)
+  Private: ~/.config/autistboar/node_signing.key (chmod 400)
   Public:  state/node_signing.pub (readable by all)
 
 For a8ra: this becomes per-Gate signing with HSM-backed keys.
@@ -21,7 +21,7 @@ from pathlib import Path
 
 from ecdsa import NIST256p, SigningKey, VerifyingKey, BadSignatureError
 
-PRIVATE_KEY_PATH = Path("/etc/autistboar/node_signing.key")
+PRIVATE_KEY_PATH = Path.home() / ".config" / "autistboar" / "node_signing.key"
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
 PUBLIC_KEY_PATH = WORKSPACE / "state" / "node_signing.pub"
 
@@ -38,7 +38,7 @@ def _generate_keypair() -> tuple[SigningKey, VerifyingKey]:
 
 
 def _save_private_key(sk: SigningKey) -> None:
-    """Save private key to /etc/autistboar/node_signing.key.
+    """Save private key to ~/.config/autistboar/node_signing.key.
 
     Attempts chmod 400 + chown. If chown fails (not root), the key is still
     saved with restrictive permissions — acceptable for single-user VPS.
@@ -106,7 +106,7 @@ def sign_hash(hash_hex: str) -> str:
     """
     sk = get_signing_key()
     hash_bytes = bytes.fromhex(hash_hex)
-    sig = sk.sign_digest(hash_bytes, hashfunc=hashlib.sha256)
+    sig = sk.sign_digest(hash_bytes)
     return sig.hex()
 
 

@@ -1,5 +1,5 @@
-thesis: "Oracle: 0 signals (10.2s). Narrative: 0 signals. Guards all CLEAR. 10:40 UTC Monday Feb 16, 2026 — low volume regime persists. Chain CLEAN (18 beads)."
-regime: yellow
+thesis: "HB338:35sig | 8🔥exec 1paper 1wl | 15NOPE 10VETO | Funnel35 Birdeye ERRx44 Whl6/9 Nan13 Ppr78"
+regime: green
 open_positions: 0
-next_action: "Monitor for whale accumulation + on-chain volume spikes."
-concern: "Oracle scan time 10.2s (up from 2.9s, Mobula networth 10.1s) — monitor for API degradation."
+next_action: "🟢 LIVE --dry-run false | Birdeye lim fix | chain anchor"
+concern: "Runner CLEAR | Birdeye persist | Nan13 Whl6/9 Ppr78 | No trades | UNANCHORED Dry337"
