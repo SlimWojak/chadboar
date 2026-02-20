@@ -6,10 +6,11 @@ This script is called by the agent to run steps 0-15 in a single execution.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,11 +37,18 @@ from lib.llm_utils import call_grok
 
 import httpx
 
-# Structured bead chain — best-effort, never blocks pipeline
+# Structured bead chain (v0.2) — best-effort, never blocks pipeline
 try:
-    from lib.beads import (
-        BeadChain, Bead, BeadHeader, BeadType, BeadEdges, BeadProvenance,
-        VerdictPayload, TradePayload, HeartbeatPayload,
+    from lib.beads import BeadChain, BeadType, RejectionCategory
+    from lib.beads.emitters import (
+        emit_fact_bead,
+        emit_signal_bead,
+        emit_proposal_bead,
+        emit_proposal_rejected_bead,
+        emit_heartbeat_bead,
+        emit_policy_bead,
+        emit_model_version_bead,
+        emit_claim_bead,
     )
     _BEADS_AVAILABLE = True
 except ImportError:
@@ -170,7 +178,42 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             bead_chain = BeadChain()
         except Exception:
             pass
-    
+
+    # Cycle timing for bi-temporal bead fields
+    cycle_start = datetime.now(timezone.utc)
+
+    # Collect bead IDs for lineage threading
+    fact_bead_ids: list[str] = []
+    claim_bead_ids: list[str] = []
+    proposal_count = 0
+
+    # POLICY + MODEL_VERSION beads on first cycle or config change
+    if bead_chain and cycle_num <= 1:
+        try:
+            import yaml
+            risk_path = Path("config/risk.yaml")
+            if risk_path.exists():
+                risk_rules = yaml.safe_load(risk_path.read_text()) or {}
+                emit_policy_bead(
+                    bead_chain,
+                    policy_name="risk_config",
+                    policy_type="RISK",
+                    rules=risk_rules,
+                    authority="G",
+                )
+        except Exception:
+            pass
+        try:
+            emit_model_version_bead(
+                bead_chain,
+                model_name="grok-4-1-fast",
+                version_hash="openrouter",
+                purpose="heartbeat",
+                config_snapshot={"provider": "openrouter", "model": "x-ai/grok-4-1-fast"},
+            )
+        except Exception:
+            pass
+
     # Funnel diagnostics — tracks signal flow for flight recorder
     funnel = {
         "nansen_raw": 0,
@@ -342,6 +385,27 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         funnel["pulse_raw"] = len(pulse_sigs)
         funnel["pulse_filtered"] = len([s for s in pulse_sigs if s.get("token_mint")])
 
+    # FACT bead: Oracle data source summary
+    if bead_chain:
+        _oracle_status = "ERR" if oracle_failed else "OK"
+        _fid = emit_fact_bead(
+            bead_chain, provider="oracle",
+            field="whale_scan_summary",
+            value={
+                "nansen_raw": funnel["nansen_raw"],
+                "nansen_filtered": funnel["nansen_filtered"],
+                "mobula_raw": funnel["mobula_raw"],
+                "pulse_raw": funnel["pulse_raw"],
+                "total_candidates": len(oracle_signals),
+                "status": _oracle_status,
+            },
+            cycle_start=cycle_start,
+            cycle_end=datetime.now(timezone.utc),
+            source_status=_oracle_status,
+        )
+        if _fid:
+            fact_bead_ids.append(_fid)
+
     # Step 6: Narrative Hunter (on-chain volume only — X API disabled)
     # Primary: DexScreener (free). Fallback: Birdeye (paid).
     narrative_failed = False
@@ -427,6 +491,25 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         s for s in narrative_signals
         if float(s.get("volume_vs_avg", "0x").replace("x", "")) >= 2.0
     ])
+
+    # FACT bead: Narrative/DexScreener data source summary
+    if bead_chain:
+        _nar_status = "ERR" if narrative_failed else "OK"
+        _fid = emit_fact_bead(
+            bead_chain, provider="dexscreener",
+            field="narrative_summary",
+            value={
+                "candidates_raw": funnel["narrative_raw"],
+                "volume_spikes": funnel["narrative_with_spike"],
+                "dexscreener_status": dexscreener_status,
+                "birdeye_status": birdeye_status,
+            },
+            cycle_start=cycle_start,
+            cycle_end=datetime.now(timezone.utc),
+            source_status=_nar_status,
+        )
+        if _fid:
+            fact_bead_ids.append(_fid)
 
     # PARTIAL DATA PENALTY (A2): Calculate data completeness
     sources_failed_count = len(result["sources_failed"])
@@ -722,34 +805,27 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             },
         }
 
-        # Emit verdict bead (structured chain — best-effort)
-        verdict_bead_id = ""
+        # Emit SIGNAL bead (v0.2 — replaces old VERDICT bead)
+        signal_bead_id = ""
         if bead_chain:
-            try:
-                _rec = score.recommendation
-                _wv = rug_status if rug_status in ("PASS", "WARN", "FAIL") else "UNKNOWN"
-                verdict_bead = Bead(
-                    header=BeadHeader(bead_type=BeadType.VERDICT),
-                    edges=BeadEdges(edges_complete=False,
-                                    edges_incomplete_reason="signal beads not yet emitted"),
-                    provenance=BeadProvenance(
-                        data_sources=result.get("source_health", {}),
-                    ),
-                    payload=VerdictPayload(
-                        token_mint=mint,
-                        token_symbol=opportunity["token_symbol"],
-                        play_type=score.play_type,
-                        scoring_breakdown=score.breakdown,
-                        conviction_score=score.permission_score,
-                        recommendation=_rec,
-                        warden_verdict=_wv,
-                        red_flags=score.red_flags if isinstance(score.red_flags, dict) else {"flags": score.red_flags},
-                    ),
-                )
-                verdict_bead_id = bead_chain.write_bead(verdict_bead)
-            except Exception:
-                pass
-        opportunity["verdict_bead_id"] = verdict_bead_id
+            _wv = rug_status if rug_status in ("PASS", "WARN", "FAIL") else "UNKNOWN"
+            _disc = (oracle_sig or {}).get("discovery_source", "unknown")
+            signal_bead_id = emit_signal_bead(
+                bead_chain,
+                token_mint=mint,
+                token_symbol=opportunity.get("token_symbol", "UNKNOWN"),
+                play_type=score.play_type,
+                discovery_source=_disc,
+                scoring_breakdown=score.breakdown,
+                conviction_score=score.permission_score,
+                warden_verdict=_wv,
+                red_flags=score.red_flags if isinstance(score.red_flags, dict) else {"flags": score.red_flags},
+                raw_metrics=opportunity.get("enrichment", {}),
+                fact_bead_ids=fact_bead_ids,
+                claim_bead_ids=claim_bead_ids,
+            )
+        opportunity["signal_bead_id"] = signal_bead_id
+        opportunity["verdict_bead_id"] = signal_bead_id  # backward compat
 
         result["opportunities"].append(opportunity)
 
@@ -765,13 +841,34 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         elif score.recommendation == "AUTO_EXECUTE":
             funnel["scored_execute"] += 1
 
-        # Decision logic
+        # Decision logic — emit PROPOSAL or PROPOSAL_REJECTED per candidate
         if score.recommendation == "VETO":
+            if bead_chain and signal_bead_id:
+                _wd = {"rug_status": rug_status, "reasoning": score.reasoning}
+                emit_proposal_rejected_bead(
+                    bead_chain, signal_bead_id=signal_bead_id,
+                    token_mint=mint, token_symbol=opportunity.get("token_symbol", "UNKNOWN"),
+                    rejection_source="rug_warden",
+                    rejection_reason=score.reasoning,
+                    rejection_category=RejectionCategory.WARDEN_VETO,
+                    scoring_breakdown=score.breakdown,
+                    warden_detail=_wd,
+                    risk_metrics={"pot_sol": state.get("current_balance_sol", 0)},
+                )
             result["decisions"].append(f"🐗 VETO: {mint[:8]} — {score.reasoning}")
         elif score.recommendation == "DISCARD":
+            if bead_chain and signal_bead_id:
+                emit_proposal_rejected_bead(
+                    bead_chain, signal_bead_id=signal_bead_id,
+                    token_mint=mint, token_symbol=opportunity.get("token_symbol", "UNKNOWN"),
+                    rejection_source="scoring",
+                    rejection_reason=f"permission {score.permission_score} < {scorer.thresholds.get('paper_trade', 30)}",
+                    rejection_category=RejectionCategory.SCORE_BELOW_THRESHOLD,
+                    scoring_breakdown=score.breakdown,
+                    risk_metrics={"pot_sol": state.get("current_balance_sol", 0)},
+                )
             result["decisions"].append(f"🐗 NOPE: {mint[:8]} — permission {score.permission_score} < {scorer.thresholds.get('paper_trade', 30)}")
         elif score.recommendation == "PAPER_TRADE":
-            # Log phantom trade for calibration — builds beads without risk
             token_symbol = (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN")
             try:
                 paper_candidate = {
@@ -791,40 +888,27 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         "red_flags": score.red_flags,
                     },
                     "warden": {"verdict": rug_status},
-                    "verdict_bead_id": verdict_bead_id,
+                    "verdict_bead_id": signal_bead_id,
                 }
                 trade_record = log_paper_trade(paper_candidate)
-                # Write analysis bead for warden-passing paper trades
                 if rug_status in ("PASS", "WARN"):
                     try:
                         write_paper_bead(trade_record)
                     except Exception:
-                        pass  # Best-effort bead writing
-                # Emit structured trade bead
-                if bead_chain and verdict_bead_id:
-                    try:
-                        _wv = rug_status if rug_status in ("PASS", "WARN", "FAIL") else "UNKNOWN"
-                        trade_bead = Bead(
-                            header=BeadHeader(bead_type=BeadType.TRADE),
-                            edges=BeadEdges(derived_from=[verdict_bead_id]),
-                            payload=TradePayload(
-                                token_mint=mint,
-                                token_symbol=token_symbol,
-                                play_type=score.play_type,
-                                scoring_breakdown=score.breakdown,
-                                conviction_score=score.permission_score,
-                                recommendation=score.recommendation,
-                                warden_verdict=_wv,
-                                red_flags=score.red_flags if isinstance(score.red_flags, dict) else {"flags": score.red_flags},
-                                entry_price=trade_record.get("entry_price_fdv", 0),
-                                entry_amount_sol=0.0,
-                                gate="paper",
-                            ),
-                        )
-                        trade_bead_id = bead_chain.write_bead(trade_bead)
-                        update_trade_bead_id(trade_record["id"], trade_bead_id, verdict_bead_id)
-                    except Exception:
                         pass
+                # Emit PROPOSAL bead (v0.2 — replaces old TRADE bead)
+                proposal_bead_id = ""
+                if bead_chain and signal_bead_id:
+                    proposal_bead_id = emit_proposal_bead(
+                        bead_chain, signal_bead_id=signal_bead_id,
+                        action="ENTER_LONG", token_mint=mint, token_symbol=token_symbol,
+                        entry_price_fdv=trade_record.get("entry_price_fdv"),
+                        position_size_sol=score.position_size_sol,
+                        execution_venue="paper", gate="auto",
+                    )
+                    if proposal_bead_id:
+                        proposal_count += 1
+                    update_trade_bead_id(trade_record["id"], proposal_bead_id, signal_bead_id)
                 result["decisions"].append(
                     f"🐗📝 PAPER: {token_symbol} ({mint[:8]}) — [{score.play_type}] "
                     f"permission {score.permission_score}, ordering {score.ordering_score}"
@@ -836,7 +920,6 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     f"permission {score.permission_score}"
                 )
         elif score.recommendation == "WATCHLIST":
-            # Also paper-trade WATCHLIST candidates to build beads faster
             token_symbol = (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN")
             try:
                 paper_candidate = {
@@ -856,42 +939,28 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         "red_flags": score.red_flags,
                     },
                     "warden": {"verdict": rug_status},
-                    "verdict_bead_id": verdict_bead_id,
+                    "verdict_bead_id": signal_bead_id,
                 }
                 trade_record = log_paper_trade(paper_candidate)
-                # Write analysis bead for warden-passing watchlist trades
                 if rug_status in ("PASS", "WARN"):
                     try:
                         write_paper_bead(trade_record)
                     except Exception:
-                        pass  # Best-effort bead writing
-                # Emit structured trade bead
-                if bead_chain and verdict_bead_id:
-                    try:
-                        _wv = rug_status if rug_status in ("PASS", "WARN", "FAIL") else "UNKNOWN"
-                        trade_bead = Bead(
-                            header=BeadHeader(bead_type=BeadType.TRADE),
-                            edges=BeadEdges(derived_from=[verdict_bead_id]),
-                            payload=TradePayload(
-                                token_mint=mint,
-                                token_symbol=token_symbol,
-                                play_type=score.play_type,
-                                scoring_breakdown=score.breakdown,
-                                conviction_score=score.permission_score,
-                                recommendation=score.recommendation,
-                                warden_verdict=_wv,
-                                red_flags=score.red_flags if isinstance(score.red_flags, dict) else {"flags": score.red_flags},
-                                entry_price=trade_record.get("entry_price_fdv", 0),
-                                entry_amount_sol=0.0,
-                                gate="paper",
-                            ),
-                        )
-                        trade_bead_id = bead_chain.write_bead(trade_bead)
-                        update_trade_bead_id(trade_record["id"], trade_bead_id, verdict_bead_id)
-                    except Exception:
                         pass
+                # Emit PROPOSAL bead (v0.2)
+                if bead_chain and signal_bead_id:
+                    _prop_id = emit_proposal_bead(
+                        bead_chain, signal_bead_id=signal_bead_id,
+                        action="ENTER_LONG", token_mint=mint, token_symbol=token_symbol,
+                        entry_price_fdv=trade_record.get("entry_price_fdv"),
+                        position_size_sol=score.position_size_sol,
+                        execution_venue="paper", gate="auto",
+                    )
+                    if _prop_id:
+                        proposal_count += 1
+                    update_trade_bead_id(trade_record["id"], _prop_id, signal_bead_id)
             except Exception:
-                pass  # Best-effort paper logging for watchlist
+                pass
             result["decisions"].append(
                 f"🐗 WATCHLIST+PAPER: {token_symbol} ({mint[:8]}) — [{score.play_type}] "
                 f"permission {score.permission_score}, ordering {score.ordering_score}, "
@@ -960,7 +1029,8 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     except Exception:
         pass  # Chain is best-effort
 
-    # Structured heartbeat bead (new bead chain)
+    # Structured heartbeat bead (v0.2)
+    cycle_end = datetime.now(timezone.utc)
     if bead_chain:
         try:
             _source_health = {}
@@ -973,27 +1043,32 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             _source_health["birdeye"] = oh.get("birdeye_status", "SKIP")
             _source_health["whale"] = "OK" if oh.get("whale_count", 0) > 0 else "EMPTY"
 
-            hb_bead = Bead(
-                header=BeadHeader(bead_type=BeadType.HEARTBEAT),
-                provenance=BeadProvenance(data_sources=_source_health),
-                payload=HeartbeatPayload(
-                    cycle_number=cycle_num,
-                    signals_found=funnel.get("reached_scorer", 0),
-                    signals_vetoed=funnel.get("scored_veto", 0),
-                    signals_passed=funnel.get("scored_paper_trade", 0)
-                                   + funnel.get("scored_watchlist", 0)
-                                   + funnel.get("scored_execute", 0),
-                    pot_sol=state.get("current_balance_sol", 0),
-                    positions_count=len(state.get("positions", [])),
-                    pipeline_health=_source_health,
-                    canary_hash=hashlib.sha256(
-                        json.dumps(state, sort_keys=True).encode()
-                    ).hexdigest()[:12],
-                ),
+            emit_heartbeat_bead(
+                bead_chain,
+                cycle_number=cycle_num,
+                signals_found=funnel.get("reached_scorer", 0),
+                signals_vetoed=funnel.get("scored_veto", 0),
+                proposals_emitted=proposal_count,
+                pot_sol=state.get("current_balance_sol", 0),
+                positions_count=len(state.get("positions", [])),
+                pipeline_health=_source_health,
+                canary_hash=hashlib.sha256(
+                    json.dumps(state, sort_keys=True).encode()
+                ).hexdigest()[:12],
+                cycle_start=cycle_start,
+                cycle_end=cycle_end,
             )
-            bead_chain.write_bead(hb_bead)
         except Exception:
-            pass  # Best-effort
+            pass
+
+    # Merkle anchor check at cycle end
+    if bead_chain:
+        try:
+            trigger = bead_chain.check_anchor_trigger()
+            if trigger:
+                bead_chain.create_merkle_batch(trigger)
+        except Exception:
+            pass
 
     result["state_updated"] = True
     result["next_cycle"] = cycle_num + 1

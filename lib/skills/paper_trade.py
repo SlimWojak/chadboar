@@ -148,59 +148,42 @@ async def check_paper_trades(bead_chain: Any = None) -> dict[str, Any]:
 
         _save_trades(trades)
 
-        # Emit autopsy beads for closed trades (best-effort)
+        # Emit autopsy beads for closed trades (v0.2 — best-effort)
         autopsies = 0
         if bead_chain and closed_trades:
             try:
-                from lib.beads import (
-                    Bead, BeadHeader, BeadType, BeadEdges,
-                    AutopsyPayload,
-                )
+                from lib.beads.emitters import emit_autopsy_bead
                 for trade in closed_trades:
                     t_bead_id = trade.get("trade_bead_id", "")
-                    v_bead_id = trade.get("verdict_bead_id", "")
                     if not t_bead_id:
-                        continue  # Pre-wiring trade, skip
+                        continue
 
-                    # Determine final PnL from last check
                     checks = trade.get("pnl_checks", [])
                     final_pnl = checks[-1]["pnl_pct"] if checks else 0.0
                     exit_fdv = checks[-1].get("current_fdv", 0) if checks else 0.0
                     hold_secs = now_epoch - trade.get("entry_epoch", now_epoch)
 
-                    # PnL → stance: positive supports conviction, negative contradicts
-                    if final_pnl >= 0:
-                        edges = BeadEdges(
-                            derived_from=[t_bead_id],
-                            supports=[v_bead_id] if v_bead_id else [t_bead_id],
-                        )
-                    else:
-                        edges = BeadEdges(
-                            derived_from=[t_bead_id],
-                            contradicts=[v_bead_id] if v_bead_id else [t_bead_id],
-                        )
-
                     try:
-                        autopsy = Bead(
-                            header=BeadHeader(bead_type=BeadType.AUTOPSY),
-                            edges=edges,
-                            payload=AutopsyPayload(
-                                trade_bead_id=t_bead_id,
-                                pnl_pct=final_pnl,
-                                exit_price=exit_fdv,
-                                exit_reason=trade.get("close_reason", "6h_expiry"),
-                                hold_duration_seconds=hold_secs,
-                                lesson=f"Paper {'win' if final_pnl >= 0 else 'loss'}: "
-                                       f"{trade.get('token_symbol', '?')} "
-                                       f"{final_pnl:+.1f}% over {hold_secs // 60}min",
-                            ),
+                        _aid = emit_autopsy_bead(
+                            bead_chain,
+                            trade_bead_id=t_bead_id,
+                            token_mint=trade.get("token_mint", ""),
+                            token_symbol=trade.get("token_symbol", "?"),
+                            pnl_pct=final_pnl,
+                            exit_price=exit_fdv,
+                            exit_reason=trade.get("close_reason", "6h_expiry"),
+                            hold_duration_seconds=hold_secs,
+                            lesson=f"Paper {'win' if final_pnl >= 0 else 'loss'}: "
+                                   f"{trade.get('token_symbol', '?')} "
+                                   f"{final_pnl:+.1f}% over {hold_secs // 60}min",
+                            supports_thesis=(final_pnl >= 0),
                         )
-                        bead_chain.write_bead(autopsy)
-                        autopsies += 1
+                        if _aid:
+                            autopsies += 1
                     except Exception:
-                        pass  # Individual autopsy failure shouldn't block others
+                        pass
             except Exception:
-                pass  # Bead import or chain failure
+                pass
 
         return {
             "status": "OK", "open": len(still_open), "checked": checked,

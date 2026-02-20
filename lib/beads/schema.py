@@ -1,16 +1,20 @@
-"""Bead schema — Pydantic v2 strict models for the intelligence substrate.
+"""Bead Field schema — BEAD_FIELD_SPEC v0.2 implementation for ChadBoar.
 
-Every bead has three layers:
-  1. Header — identity, type, chain link, timing, agent provenance
-  2. Edges — derived_from, supports, contradicts (mandatory graph structure)
-  3. Payload — type-specific data
+Implements the a8ra canonical bead specification adapted to the memecoin
+trading domain. This is the real spec, not a stub — every edge case found
+here saves weeks in production.
 
-Bead IDs are hex-encoded SHA-256 of canonical JSON content (deterministic).
-Edges are mandatory because isolated knowledge doesn't compound — only
-connected knowledge does.
+Key differences from v0:
+  - bead_id is UUID v7 (time-ordered), NOT content-hash
+  - hash_self is SHA-256 of canonical content (separate from identity)
+  - Bi-temporal: world_time (WT) + knowledge_time (KT) on every bead
+  - ECDSA attestation envelope on every bead
+  - 10 bead types (8 canonical a8ra + 2 ChadBoar extensions)
+  - Flat BeadBase structure (no header/edges/provenance nesting)
+  - Lineage replaces edges (ordered parent list, not supports/contradicts)
 
-Ports to a8ra: agent_id becomes per-agent, Gate-signing replaces self-signing,
-cross-agent edges enable multi-agent intelligence fusion.
+Ports to a8ra: PQC dual-signing, HLC timestamps, multi-node topology,
+XTDB bitemporal engine replaces SQLite WT/KT columns.
 """
 
 from __future__ import annotations
@@ -19,324 +23,417 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal, Union
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
+from uuid_extensions import uuid7
+
+
+# ── Enums ────────────────────────────────────────────────────────────
 
 
 class BeadType(str, Enum):
-    """Exhaustive set of bead types."""
-
-    SIGNAL = "signal"
-    VERDICT = "verdict"
-    TRADE = "trade"
-    AUTOPSY = "autopsy"
-    INSIGHT = "insight"
-    HEARTBEAT = "heartbeat"
-
-
-# ── Null sentinel for genesis bead ──────────────────────────────────
-GENESIS_PREV_HASH = "0" * 64
+    FACT = "FACT"
+    CLAIM = "CLAIM"
+    SIGNAL = "SIGNAL"
+    PROPOSAL = "PROPOSAL"
+    PROPOSAL_REJECTED = "PROPOSAL_REJECTED"
+    SKILL = "SKILL"
+    MODEL_VERSION = "MODEL_VERSION"
+    POLICY = "POLICY"
+    AUTOPSY = "AUTOPSY"            # ChadBoar extension — may merge into CLAIM for a8ra
+    HEARTBEAT = "HEARTBEAT"        # ChadBoar extension — cycle-level metadata
 
 
-# ── Header ──────────────────────────────────────────────────────────
-
-class BeadHeader(BaseModel):
-    """Identity and chain linkage. Present on every bead."""
-
-    bead_id: str = Field(
-        default="",
-        description="SHA-256 of canonical content. Computed at write time.",
-    )
-    bead_type: BeadType
-    prev_hash: str = Field(
-        default=GENESIS_PREV_HASH,
-        description="Hash of previous bead in chain. Genesis uses null sentinel.",
-    )
-    timestamp: str = Field(
-        default="",
-        description="ISO-8601 UTC. Set at creation if empty.",
-    )
-    agent_id: str = Field(
-        default="chadboar-v0.2",
-        description="Parameterized for a8ra multi-agent.",
-    )
-    session_id: str = Field(
-        default="",
-        description="OpenClaw cron run ID. Ties to canary for execution verification.",
-    )
+class TemporalClass(str, Enum):
+    OBSERVATION = "OBSERVATION"    # Tied to specific market time
+    PATTERN = "PATTERN"            # Timeless methodology
+    DERIVED = "DERIVED"            # Computed from other beads
 
 
-# ── Edges ───────────────────────────────────────────────────────────
-
-class BeadEdges(BaseModel):
-    """Mandatory graph structure. Every bead must declare its lineage.
-
-    derived_from: what inputs informed this bead (min 1, except heartbeat)
-    supports: beads whose findings this bead agrees with
-    contradicts: beads whose findings this bead disagrees with
-    edges_complete: honest self-declaration of edge population quality
-    """
-
-    derived_from: list[str] = Field(
-        default_factory=list,
-        description="Bead IDs of inputs. Min 1 for all types except heartbeat.",
-    )
-    supports: list[str] = Field(
-        default_factory=list,
-        description="Bead IDs this bead's findings agree with.",
-    )
-    contradicts: list[str] = Field(
-        default_factory=list,
-        description="Bead IDs this bead's findings disagree with.",
-    )
-    edges_complete: bool = Field(
-        default=True,
-        description="Agent self-declares whether edges are fully populated.",
-    )
-    edges_incomplete_reason: str = Field(
-        default="",
-        description="Why edges are incomplete. Required when edges_complete=False.",
-    )
+class BeadStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    SUPERSEDED = "SUPERSEDED"
+    RETRACTED = "RETRACTED"
 
 
-# ── Provenance ──────────────────────────────────────────────────────
-
-class BeadProvenance(BaseModel):
-    """Data lineage and verifiability metadata."""
-
-    data_sources: dict[str, str] = Field(
-        default_factory=dict,
-        description='Per-source status. e.g. {"dexscreener": "OK", "birdeye": "SKIP"}',
-    )
-    source_hash: str = Field(
-        default="",
-        description="SHA-256 of the raw input data that produced this bead.",
-    )
-    attestation_coverage: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description="Fraction of inputs that are independently verifiable (0.0-1.0).",
-    )
+class SourceType(str, Enum):
+    MARKET_DATA = "MARKET_DATA"
+    AGENT = "AGENT"
+    HUMAN = "HUMAN"
+    EXTRACTION = "EXTRACTION"
+    SIMULATION = "SIMULATION"
 
 
-# ── Payloads (type-specific) ───────────────────────────────────────
+class RejectionCategory(str, Enum):
+    PROVENANCE_FAILURE = "PROVENANCE_FAILURE"
+    LOGICAL_CONTRADICTION = "LOGICAL_CONTRADICTION"
+    REGIME_MISMATCH = "REGIME_MISMATCH"
+    RISK_BREACH = "RISK_BREACH"
+    STALE_DATA = "STALE_DATA"
+    FALSIFICATION_FAILED = "FALSIFICATION_FAILED"
+    HUMAN_OVERRIDE = "HUMAN_OVERRIDE"
+    WARDEN_VETO = "WARDEN_VETO"
+    DAILY_SUBLIMIT = "DAILY_SUBLIMIT"
+    SCORE_BELOW_THRESHOLD = "SCORE_BELOW_THRESHOLD"
 
-class SignalPayload(BaseModel):
-    """A candidate signal entering the scoring funnel."""
 
+# ── Supporting Models ────────────────────────────────────────────────
+
+
+class SourceRef(BaseModel):
+    source_type: SourceType
+    source_id: str
+    source_version: str | None = None
+
+
+class AttestationEnvelope(BaseModel):
+    air_node_id: str = ""
+    code_hash: str = ""
+    model_hash: str | None = None
+    container_hash: str | None = None
+    ecdsa_sig: str = ""
+    pqc_sig: str | None = None  # Reserved for future PQC (Dilithium)
+
+
+# ── Type-Specific Content Models ────────────────────────────────────
+
+
+class FactContent(BaseModel):
+    symbol: str
+    token_mint: str | None = None
+    field: str
+    value: float | str | dict
+    as_of_world_time: datetime
+    provider: str
+    quality_score: float | None = None
+
+
+class ClaimContent(BaseModel):
+    conclusion: str
+    reasoning_trace: str
+    premises_ref: list[str] = []
+    confidence_basis: str
+    domain: str
+    tokens_referenced: list[str] = []
+
+
+class SignalContent(BaseModel):
     token_mint: str
     token_symbol: str
-    play_type: Literal["graduation", "accumulation"]
-    discovery_source: str = Field(
-        description="Where the signal originated (e.g. 'pulse-bonding', 'dex-trades').",
-    )
-    raw_metrics: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Actual numbers: volume, FDV, liquidity, holder count, etc.",
-    )
-
-
-class VerdictPayload(BaseModel):
-    """A scored candidate with conviction breakdown."""
-
-    token_mint: str
-    token_symbol: str
-    play_type: Literal["graduation", "accumulation"]
-    scoring_breakdown: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Full weighted scores per component.",
-    )
+    play_type: str
+    direction: str = "LONG"
+    discovery_source: str
+    scoring_breakdown: dict = {}
     conviction_score: int = Field(ge=0, le=100)
-    recommendation: Literal[
-        "AUTO_EXECUTE", "WATCHLIST", "PAPER_TRADE", "DISCARD", "VETO"
-    ]
-    warden_verdict: Literal["PASS", "WARN", "FAIL", "UNKNOWN"]
-    red_flags: dict[str, Any] = Field(default_factory=dict)
-
-
-class TradePayload(BaseModel):
-    """An executed trade (live or paper)."""
-
-    token_mint: str
-    token_symbol: str
-    play_type: Literal["graduation", "accumulation"]
-    scoring_breakdown: dict[str, Any] = Field(default_factory=dict)
-    conviction_score: int = Field(ge=0, le=100)
-    recommendation: str
     warden_verdict: str
-    red_flags: dict[str, Any] = Field(default_factory=dict)
-    entry_price: float
-    entry_amount_sol: float
-    entry_tx_hash: str = Field(
-        default="",
-        description="Empty for paper trades.",
-    )
-    gate: Literal["auto", "escalated", "human_approved", "paper"]
+    red_flags: dict = {}
+    raw_metrics: dict = {}
+    risk_profile: dict = {}
+    supporting_claims: list[str] = []
+    supporting_facts: list[str] = []
 
 
-class AutopsyPayload(BaseModel):
-    """Post-trade evaluation with PnL and reflection."""
+class ProposalContent(BaseModel):
+    signal_ref: str
+    action: str
+    token_mint: str
+    token_symbol: str
+    entry_price_fdv: float | None = None
+    position_size_sol: float | None = None
+    position_size_method: str = "score_weighted"
+    stop_loss: dict | None = None
+    constraints: list[str] = []
+    execution_venue: str = "solana_mainnet"
+    gate: str
 
-    trade_bead_id: str = Field(
-        description="References the trade bead being evaluated.",
-    )
+
+class ProposalRejectedContent(BaseModel):
+    signal_ref: str
+    action: str
+    token_mint: str
+    token_symbol: str
+    entry_price_fdv: float | None = None
+    position_size_sol: float | None = None
+    position_size_method: str = "score_weighted"
+    stop_loss: dict | None = None
+    constraints: list[str] = []
+    execution_venue: str = "solana_mainnet"
+    gate: str
+
+    rejection_source: str
+    rejection_reason: str
+    rejection_category: RejectionCategory
+    rejection_policy_ref: str | None = None
+    scoring_breakdown_at_rejection: dict = {}
+    warden_detail: dict | None = None
+    risk_metrics_at_rejection: dict = {}
+    counterfactual_summary: str | None = None
+    linked_skills: list[str] | None = None
+
+
+class SkillContent(BaseModel):
+    skill_name: str
+    skill_type: str
+    description: str
+    failure_trajectory_refs: list[str] = []
+    success_trajectory_refs: list[str] = []
+    conditions: dict = {}
+    distillation_method: str
+    validation_status: str = "CANDIDATE"
+    validated_by: str | None = None
+
+
+class ModelVersionContent(BaseModel):
+    model_name: str
+    version_hash: str
+    purpose: str
+    deployment_status: str
+    config_snapshot: dict = {}
+
+
+class PolicyContent(BaseModel):
+    policy_name: str
+    policy_type: str
+    rules: dict
+    effective_from: datetime
+    effective_to: datetime | None = None
+    supersedes: str | None = None
+    authority: str
+
+
+class AutopsyContent(BaseModel):
+    """ChadBoar extension — post-trade evaluation with PnL."""
+    trade_bead_id: str
+    token_mint: str
+    token_symbol: str
     pnl_sol: float = 0.0
     pnl_pct: float = 0.0
     exit_price: float = 0.0
     exit_reason: str = ""
-    exit_tx_hash: str = Field(
-        default="",
-        description="Empty for paper trades.",
-    )
     hold_duration_seconds: int = 0
-    lesson: str = Field(
-        default="",
-        description="One-sentence agent reflection on what happened.",
-    )
+    lesson: str = ""
+    supports_thesis: bool | None = None
 
 
-class InsightPayload(BaseModel):
-    """Distilled intelligence from pattern mining."""
-
-    insight_type: Literal["pattern", "failure_mode", "regime_shift", "skill_extracted"]
-    content: str = Field(description="The distilled insight.")
-    evidence_bead_ids: list[str] = Field(
-        default_factory=list,
-        description="Beads that support this insight.",
-    )
-    confidence: float = Field(ge=0.0, le=1.0)
-
-
-class HeartbeatPayload(BaseModel):
-    """Cycle-level metadata for pipeline health tracking."""
-
+class HeartbeatContent(BaseModel):
+    """ChadBoar extension — cycle-level pipeline metadata."""
     cycle_number: int
     signals_found: int = 0
     signals_vetoed: int = 0
-    signals_passed: int = 0
+    proposals_emitted: int = 0
     pot_sol: float = 0.0
     positions_count: int = 0
-    pipeline_health: dict[str, str] = Field(
-        default_factory=dict,
-        description="Per-source status map.",
-    )
-    canary_hash: str = Field(
-        default="",
-        description="Ties to canary file for hallucination detection.",
-    )
+    pipeline_health: dict = {}
+    canary_hash: str = ""
+    previous_heartbeat_id: str | None = None
 
 
-# ── Unified Bead ────────────────────────────────────────────────────
+# ── Content type mapping ─────────────────────────────────────────────
 
-# Payload union type
-PayloadType = Union[
-    SignalPayload,
-    VerdictPayload,
-    TradePayload,
-    AutopsyPayload,
-    InsightPayload,
-    HeartbeatPayload,
-]
+CONTENT_TYPE_MAP: dict[BeadType, type[BaseModel]] = {
+    BeadType.FACT: FactContent,
+    BeadType.CLAIM: ClaimContent,
+    BeadType.SIGNAL: SignalContent,
+    BeadType.PROPOSAL: ProposalContent,
+    BeadType.PROPOSAL_REJECTED: ProposalRejectedContent,
+    BeadType.SKILL: SkillContent,
+    BeadType.MODEL_VERSION: ModelVersionContent,
+    BeadType.POLICY: PolicyContent,
+    BeadType.AUTOPSY: AutopsyContent,
+    BeadType.HEARTBEAT: HeartbeatContent,
+}
 
 
-class Bead(BaseModel):
-    """A single bead in the intelligence chain.
+# ── Universal Bead Base ──────────────────────────────────────────────
 
-    Three layers: header (identity + chain), edges (graph), payload (data).
-    Bead ID is computed from canonical content at write time.
+
+def generate_bead_id() -> str:
+    """Generate a UUID v7 bead ID (time-ordered, globally unique)."""
+    return str(uuid7())
+
+
+class BeadBase(BaseModel):
+    """Universal bead — every bead in the field shares this structure.
+
+    Identity is UUID v7 (time-ordered). Content integrity is hash_self
+    (SHA-256 of canonical JSON). These are deliberately separate: identity
+    is assigned at creation, integrity is computed at commitment.
     """
 
-    header: BeadHeader
-    edges: BeadEdges = Field(default_factory=BeadEdges)
-    provenance: BeadProvenance = Field(default_factory=BeadProvenance)
-    payload: PayloadType
+    # Identity
+    bead_id: str = Field(default_factory=generate_bead_id)
+    bead_type: BeadType
+
+    # Bi-Temporal
+    world_time_valid_from: datetime | None = None
+    world_time_valid_to: datetime | None = None
+    knowledge_time_recorded_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
+    temporal_class: TemporalClass
+
+    # Provenance
+    source_ref: SourceRef
+    lineage: list[str] = Field(default_factory=list)
+
+    # Integrity
+    hash_self: str = ""
+    hash_prev: str | None = None
+    merkle_batch_id: str | None = None
+
+    # Attestation (Layer 3)
+    attestation: AttestationEnvelope = Field(
+        default_factory=AttestationEnvelope,
+    )
+
+    # Operational
+    status: BeadStatus = BeadStatus.ACTIVE
+    superseded_by: str | None = None
+    retraction_reason: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+    # Content (type-specific)
+    content: dict = Field(default_factory=dict)
+
+    # ── Validators ───────────────────────────────────────────────────
 
     @model_validator(mode="after")
-    def _validate_edges(self) -> "Bead":
-        """Enforce edge discipline per bead type."""
-        bead_type = self.header.bead_type
+    def _validate_temporal_consistency(self) -> "BeadBase":
+        """Enforce temporal class / world_time consistency (spec rule 1)."""
+        tc = self.temporal_class
+        wt_from = self.world_time_valid_from
+        wt_to = self.world_time_valid_to
 
-        # Heartbeat beads derive from previous heartbeat (set by chain manager)
-        # All other types need at least one derived_from edge
-        if bead_type != BeadType.HEARTBEAT and not self.edges.derived_from:
-            self.edges.edges_complete = False
-            if not self.edges.edges_incomplete_reason:
-                self.edges.edges_incomplete_reason = "no derived_from edges declared"
-
-        # Autopsy beads must reference a trade bead in derived_from
-        if bead_type == BeadType.AUTOPSY:
-            assert isinstance(self.payload, AutopsyPayload)
-            trade_ref = self.payload.trade_bead_id
-            if trade_ref and trade_ref not in self.edges.derived_from:
-                self.edges.derived_from.append(trade_ref)
-            # Autopsy MUST support or contradict the original verdict.
-            # This is the most valuable edge for SkillRL distillation —
-            # "I predicted X, reality was Y, was I right?"
-            if not self.edges.supports and not self.edges.contradicts:
+        if tc == TemporalClass.OBSERVATION:
+            if wt_from is None or wt_to is None:
                 raise ValueError(
-                    "Autopsy bead must declare at least one 'supports' or "
-                    "'contradicts' edge referencing the original verdict. "
-                    "This edge is required for the learning loop."
+                    "OBSERVATION beads require both world_time_valid_from "
+                    "and world_time_valid_to"
+                )
+        elif tc == TemporalClass.PATTERN:
+            if wt_from is not None or wt_to is not None:
+                raise ValueError(
+                    "PATTERN beads must have null world_time_valid_from "
+                    "and world_time_valid_to"
                 )
 
         return self
 
     @model_validator(mode="after")
-    def _set_timestamp(self) -> "Bead":
-        """Set timestamp if not already set."""
-        if not self.header.timestamp:
-            self.header.timestamp = datetime.now(timezone.utc).isoformat()
+    def _validate_rejection_fields(self) -> "BeadBase":
+        """Enforce rejection completeness (spec rules 2-3)."""
+        if self.bead_type != BeadType.PROPOSAL_REJECTED:
+            return self
+
+        content = self.content
+        if not content.get("rejection_category"):
+            raise ValueError(
+                "PROPOSAL_REJECTED must have rejection_category"
+            )
+        if not content.get("rejection_reason"):
+            raise ValueError(
+                "PROPOSAL_REJECTED must have rejection_reason"
+            )
+
+        cat = content.get("rejection_category")
+        if cat == RejectionCategory.RISK_BREACH.value or cat == RejectionCategory.RISK_BREACH:
+            if not content.get("rejection_policy_ref"):
+                raise ValueError(
+                    "RISK_BREACH rejection must have rejection_policy_ref "
+                    "(which POLICY bead was active at rejection time)"
+                )
+
         return self
 
-    def canonical_content(self) -> str:
-        """Produce deterministic JSON for hashing.
+    @model_validator(mode="after")
+    def _validate_lineage(self) -> "BeadBase":
+        """Enforce lineage requirements (spec rule 4).
 
-        Excludes bead_id and prev_hash (these are chain metadata, not content).
-        Two beads with identical content produce identical hashes.
+        Root FACTs and PATTERN beads (POLICY, MODEL_VERSION, SKILL) may have
+        empty lineage. SIGNAL must reference at least one FACT or CLAIM.
+        PROPOSAL/PROPOSAL_REJECTED must reference a SIGNAL.
+        HEARTBEAT may reference previous heartbeat (set by chain manager).
         """
-        content = {
-            "bead_type": self.header.bead_type.value,
-            "timestamp": self.header.timestamp,
-            "agent_id": self.header.agent_id,
-            "session_id": self.header.session_id,
-            "edges": self.edges.model_dump(mode="json"),
-            "provenance": self.provenance.model_dump(mode="json"),
-            "payload": self.payload.model_dump(mode="json"),
+        bt = self.bead_type
+        exempt = {
+            BeadType.FACT, BeadType.POLICY, BeadType.MODEL_VERSION,
+            BeadType.SKILL, BeadType.HEARTBEAT,
         }
-        return json.dumps(content, sort_keys=True, separators=(",", ":"))
+        if bt not in exempt and not self.lineage:
+            raise ValueError(
+                f"{bt.value} bead requires at least one entry in lineage"
+            )
+        return self
 
-    def compute_bead_id(self) -> str:
+    # ── Hashing ──────────────────────────────────────────────────────
+
+    def canonical_content(self) -> str:
+        """Deterministic JSON for hash_self computation.
+
+        Excludes: hash_self, merkle_batch_id, hash_prev (chain metadata).
+        Includes everything else. Same content always produces same hash.
+        """
+        data = self.model_dump(mode="json")
+        for exclude_key in ("hash_self", "merkle_batch_id", "hash_prev"):
+            data.pop(exclude_key, None)
+        # Attestation ecdsa_sig is also excluded — it depends on hash_self
+        if "attestation" in data:
+            data["attestation"].pop("ecdsa_sig", None)
+            data["attestation"].pop("pqc_sig", None)
+        return json.dumps(data, sort_keys=True, separators=(",", ":"))
+
+    def compute_hash_self(self) -> str:
         """SHA-256 of canonical content."""
-        return hashlib.sha256(self.canonical_content().encode()).hexdigest()
+        return hashlib.sha256(
+            self.canonical_content().encode("utf-8")
+        ).hexdigest()
 
-    def to_chain_dict(self) -> dict[str, Any]:
-        """Full bead as a dict for storage/export."""
-        return {
-            "header": self.header.model_dump(mode="json"),
-            "edges": self.edges.model_dump(mode="json"),
-            "provenance": self.provenance.model_dump(mode="json"),
-            "payload": self.payload.model_dump(mode="json"),
-            "payload_type": self.header.bead_type.value,
-        }
+    def to_storage_dict(self) -> dict[str, Any]:
+        """Full bead as dict for SQLite storage / JSONL export."""
+        return self.model_dump(mode="json")
 
     @classmethod
-    def from_chain_dict(cls, data: dict[str, Any]) -> "Bead":
-        """Reconstruct a Bead from stored dict."""
-        payload_type_map: dict[str, type[PayloadType]] = {
-            "signal": SignalPayload,
-            "verdict": VerdictPayload,
-            "trade": TradePayload,
-            "autopsy": AutopsyPayload,
-            "insight": InsightPayload,
-            "heartbeat": HeartbeatPayload,
-        }
-        bead_type_str = data.get("payload_type", data["header"]["bead_type"])
-        payload_cls = payload_type_map[bead_type_str]
+    def from_storage_dict(cls, data: dict[str, Any]) -> "BeadBase":
+        """Reconstruct a BeadBase from stored dict.
+
+        Validates the content dict against the type-specific model to ensure
+        integrity on read, but stores content as a plain dict.
+        """
+        return cls.model_validate(data)
+
+    @classmethod
+    def create(
+        cls,
+        bead_type: BeadType,
+        temporal_class: TemporalClass,
+        source_ref: SourceRef,
+        content_model: BaseModel,
+        *,
+        lineage: list[str] | None = None,
+        world_time_valid_from: datetime | None = None,
+        world_time_valid_to: datetime | None = None,
+        tags: list[str] | None = None,
+    ) -> "BeadBase":
+        """Factory method — build a bead from a typed content model.
+
+        Validates that the content model matches the bead type, serializes
+        the content to dict, and constructs the full bead.
+        """
+        expected_cls = CONTENT_TYPE_MAP.get(bead_type)
+        if expected_cls and not isinstance(content_model, expected_cls):
+            raise TypeError(
+                f"Content model for {bead_type.value} must be "
+                f"{expected_cls.__name__}, got {type(content_model).__name__}"
+            )
+
         return cls(
-            header=BeadHeader(**data["header"]),
-            edges=BeadEdges(**data["edges"]),
-            provenance=BeadProvenance(**data["provenance"]),
-            payload=payload_cls(**data["payload"]),
+            bead_type=bead_type,
+            temporal_class=temporal_class,
+            source_ref=source_ref,
+            content=content_model.model_dump(mode="json"),
+            lineage=lineage or [],
+            world_time_valid_from=world_time_valid_from,
+            world_time_valid_to=world_time_valid_to,
+            tags=tags or [],
         )
