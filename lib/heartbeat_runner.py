@@ -37,6 +37,9 @@ from lib.llm_utils import call_grok
 
 import httpx
 
+from lib.skills.execute_swap import execute_swap
+from lib.chain.anchor import get_wallet_pubkey
+
 # Structured bead chain (v0.2) — best-effort, never blocks pipeline
 try:
     from lib.beads import BeadChain, BeadType, RejectionCategory
@@ -982,7 +985,86 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     f"🐗🔥 EXECUTE: {mint[:8]} — [{score.play_type}] {score.position_size_sol:.4f} SOL "
                     f"(permission {score.permission_score}, ordering {score.ordering_score}) OINK!"
                 )
-                # TODO: Call execute_swap here in live mode
+                # --- LIVE TRADE EXECUTION ---
+                try:
+                    wallet_pubkey = get_wallet_pubkey()
+
+                    slippage_bps = 500 if score.play_type == "graduation" else 300
+
+                    buy_result = await execute_swap(
+                        direction="buy",
+                        token_mint=mint,
+                        amount=score.position_size_sol,
+                        dry_run=False,
+                        slippage_bps=slippage_bps,
+                        wallet_pubkey=wallet_pubkey,
+                    )
+
+                    buy_status = buy_result.get("status")
+                    if buy_status != "SUCCESS":
+                        error_msg = buy_result.get("error", "unknown")
+                        result["errors"].append(
+                            f"Trade FAILED for {mint[:8]}: {error_msg}"
+                        )
+                    else:
+                        # Calculate entry price from swap result
+                        amount_out = float(buy_result.get("amount_out", 0))
+                        entry_price = 0.0
+                        if amount_out > 0:
+                            amount_in_sol = float(buy_result.get("amount_in", 0)) / 1e9
+                            if amount_in_sol > 0:
+                                entry_price = (amount_in_sol * sol_price_usd) / amount_out
+
+                        now = datetime.utcnow().isoformat()
+                        new_position = {
+                            "token_mint": mint,
+                            "token_symbol": token_symbol,
+                            "direction": "long",
+                            "entry_price": entry_price,
+                            "entry_amount_sol": score.position_size_sol,
+                            "entry_amount_tokens": amount_out,
+                            "entry_time": now,
+                            "peak_price": entry_price,
+                            "play_type": score.play_type,
+                            "thesis": (
+                                f"{score.play_type}: perm {score.permission_score}, "
+                                f"ord {score.ordering_score}, "
+                                f"primary {len(score.primary_sources)}"
+                            ),
+                            "signals": score.primary_sources,
+                        }
+
+                        # Atomic state update (re-read for freshness)
+                        state = safe_read_json(state_path)
+                        state.setdefault("positions", []).append(new_position)
+                        state["daily_exposure_sol"] = (
+                            state.get("daily_exposure_sol", 0) + score.position_size_sol
+                        )
+                        state["current_balance_sol"] = (
+                            state.get("current_balance_sol", 0) - score.position_size_sol
+                        )
+                        state["total_trades"] = state.get("total_trades", 0) + 1
+                        state["last_trade_time"] = now
+                        safe_write_json(state_path, state)
+
+                        result["decisions"].append(
+                            f"  -> BUY OK: {amount_out:.2f} tokens, entry ${entry_price:.6f}"
+                        )
+
+                        # Emit PROPOSAL bead (v0.2) for live trade
+                        if bead_chain and signal_bead_id:
+                            emit_proposal_bead(
+                                bead_chain, signal_bead_id=signal_bead_id,
+                                action="ENTER_LONG", token_mint=mint,
+                                token_symbol=token_symbol,
+                                position_size_sol=score.position_size_sol,
+                                execution_venue="jupiter_jito", gate="auto",
+                            )
+
+                except Exception as e:
+                    result["errors"].append(
+                        f"Trade execution error for {mint[:8]}: {e}"
+                    )
     
     # Close red flag client after loop
     await birdeye_red_flags.close()

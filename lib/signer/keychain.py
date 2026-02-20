@@ -229,13 +229,14 @@ def verify_isolation() -> dict[str, Any]:
         "PATH", "HOME", "PYTHON", "VIRTUAL_ENV", "SHELL", "TERM", "LANG",
         "USER", "LOGNAME", "PWD", "OLDPWD", "TMPDIR", "XDG_", "LC_",
         "OPENROUTER_", "TELEGRAM_", "HELIUS_", "BIRDEYE_", "NANSEN_",
-        "X_BEARER_", "SIGNER_KEY_PATH", "AUTISTBOAR_",
+        "X_BEARER_", "XAI_", "SIGNER_KEY_PATH", "AUTISTBOAR_",
         # IDE / system env vars
         "VSCODE_", "CURSOR_", "ELECTRON_", "NODE_", "NPM_", "NVM_",
         "COLORTERM", "GIT_", "SSH_", "GPG_", "DISPLAY", "DBUS_",
         "CONDA_", "HOMEBREW_", "APPLE_", "COMMAND_MODE", "MallocNanoZone",
         "__CF", "__CFB", "SECURITYSESSIONID", "LaunchInstanceID",
-        "ORIGINAL_XDG",
+        "ORIGINAL_XDG", "OPENCLAW_", "MEMORY_",
+        "BRAVE_", "PERPLEXITY_", "REPLICATE_", "ELEVENLABS_",
     )
     for key, value in os.environ.items():
         if len(value) >= 64 and not any(key.startswith(p) for p in safe_prefixes):

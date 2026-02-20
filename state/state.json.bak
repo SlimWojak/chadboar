@@ -15,9 +15,9 @@
   "total_wins": 0,
   "total_losses": 0,
   "last_trade_time": "",
-  "last_heartbeat_time": "2026-02-20T06:11:13.860535",
-  "dry_run_mode": true,
-  "dry_run_cycles_completed": 336,
+  "last_heartbeat_time": "2026-02-20T13:21:28.442453",
+  "dry_run_mode": false,
+  "dry_run_cycles_completed": 337,
   "dry_run_target_cycles": 10,
   "daily_graduation_count": 0
 }
