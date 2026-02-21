@@ -1,6 +1,6 @@
 """Blind Executioner — CLI entry point.
 
-Executes Jupiter swaps with MEV protection via Jito bundles.
+Executes Jupiter swaps via Helius RPC with Blind KeyMan signing.
 The signer is a separate subprocess (INV-BLIND-KEY).
 
 Usage:
@@ -22,11 +22,18 @@ import os
 import httpx
 
 from lib.clients.jupiter import JupiterClient, SOL_MINT
-from lib.clients.jito import JitoClient
 from lib.signer.keychain import sign_transaction, verify_isolation, SignerError
 
 
 LAMPORTS_PER_SOL = 1_000_000_000
+
+
+def _get_rpc_url() -> str:
+    """Build Helius RPC URL (or fallback to public)."""
+    helius_key = os.environ.get("HELIUS_API_KEY", "")
+    if helius_key:
+        return f"https://mainnet.helius-rpc.com/?api-key={helius_key}"
+    return "https://api.mainnet-beta.solana.com"
 
 
 async def execute_swap(
@@ -37,16 +44,16 @@ async def execute_swap(
     slippage_bps: int = 300,
     wallet_pubkey: str = "",
 ) -> dict[str, Any]:
-    """Execute a swap via Jupiter + Jito with Blind KeyMan signing.
+    """Execute a swap via Jupiter + Helius RPC with Blind KeyMan signing.
 
     Flow:
     1. Get Jupiter quote
     2. Get swap transaction (unsigned)
     3. Pass to Blind KeyMan signer subprocess (INV-BLIND-KEY)
-    4. Submit signed tx via Jito bundle (MEV-protected)
+    4. Submit signed tx to Helius RPC (with retries for leader rotation)
+    5. Poll for on-chain confirmation
     """
     jupiter = JupiterClient()
-    jito = JitoClient()
 
     try:
         # Verify key isolation before any execution
@@ -114,87 +121,81 @@ async def execute_swap(
                 "error": f"Signer error: {e}",
             }
 
-        # Step 4: Submit via Jito bundle (MEV-protected), fallback to RPC
+        # Step 4: Submit to Helius RPC with retries
+        # skipPreflight=True saves a round-trip; we confirm on-chain anyway.
+        # Retry 3x with 2s gaps to handle Solana leader rotation.
+        rpc_url = _get_rpc_url()
         tx_id = ""
-        submit_via = ""
-        jito_error_msg = ""
-        try:
-            bundle_result = await jito.send_bundle([signed_tx_b64])
-            tx_id = bundle_result.get("result", "")
-            submit_via = "jito"
-        except Exception as jito_err:
-            # Jito failed — send via Helius RPC. Log reason for diagnostics.
-            jito_error_msg = str(jito_err)[:200]
-            helius_key = os.environ.get("HELIUS_API_KEY", "")
-            rpc_url = (
-                f"https://mainnet.helius-rpc.com/?api-key={helius_key}"
-                if helius_key
-                else "https://api.mainnet-beta.solana.com"
-            )
-            async with httpx.AsyncClient(timeout=15) as rpc:
-                rpc_resp = await rpc.post(rpc_url, json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "sendTransaction",
-                    "params": [
-                        signed_tx_b64,
-                        {"encoding": "base64", "skipPreflight": False,
-                         "preflightCommitment": "confirmed"},
-                    ],
-                })
-                rpc_data = rpc_resp.json()
-                if "error" in rpc_data:
-                    return {
-                        "status": "FAILED",
-                        "direction": direction,
-                        "token_mint": token_mint,
-                        "error": f"RPC send failed: {rpc_data['error']}",
-                    }
-                tx_id = rpc_data.get("result", "")
-                submit_via = "helius_rpc"
+        last_rpc_error = ""
+        async with httpx.AsyncClient(timeout=15) as rpc:
+            for send_attempt in range(3):
+                if send_attempt > 0:
+                    await asyncio.sleep(2)
+                try:
+                    rpc_resp = await rpc.post(rpc_url, json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "sendTransaction",
+                        "params": [
+                            signed_tx_b64,
+                            {"encoding": "base64", "skipPreflight": True,
+                             "maxRetries": 3},
+                        ],
+                    })
+                    rpc_data = rpc_resp.json()
+                    if "error" in rpc_data:
+                        last_rpc_error = str(rpc_data["error"])[:200]
+                        continue
+                    tx_id = rpc_data.get("result", "")
+                    if tx_id:
+                        break
+                except Exception as e:
+                    last_rpc_error = str(e)[:200]
+
+        if not tx_id:
+            return {
+                "status": "FAILED",
+                "direction": direction,
+                "token_mint": token_mint,
+                "error": f"RPC send failed after 3 attempts: {last_rpc_error}",
+            }
 
         # Step 5: Confirm transaction landed on-chain
         confirmed = False
-        if tx_id:
-            helius_key = os.environ.get("HELIUS_API_KEY", "")
-            confirm_url = (
-                f"https://mainnet.helius-rpc.com/?api-key={helius_key}"
-                if helius_key
-                else "https://api.mainnet-beta.solana.com"
-            )
-            async with httpx.AsyncClient(timeout=30) as rpc:
-                for _attempt in range(6):  # Poll up to ~30s
-                    await asyncio.sleep(5)
-                    try:
-                        sig_resp = await rpc.post(confirm_url, json={
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "method": "getSignatureStatuses",
-                            "params": [[tx_id], {"searchTransactionHistory": False}],
-                        })
-                        sig_data = sig_resp.json()
-                        statuses = sig_data.get("result", {}).get("value", [])
-                        if statuses and statuses[0] is not None:
-                            if statuses[0].get("err") is None:
-                                confirmed = True
-                                break
-                            else:
-                                return {
-                                    "status": "FAILED",
-                                    "direction": direction,
-                                    "token_mint": token_mint,
-                                    "error": f"Tx landed but failed on-chain: {statuses[0]['err']}",
-                                    "tx_signature": tx_id,
-                                }
-                    except Exception:
-                        pass
+        confirm_url = _get_rpc_url()
+        async with httpx.AsyncClient(timeout=30) as rpc:
+            for _attempt in range(8):  # Poll up to ~32s
+                await asyncio.sleep(4)
+                try:
+                    sig_resp = await rpc.post(confirm_url, json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "getSignatureStatuses",
+                        "params": [[tx_id], {"searchTransactionHistory": True}],
+                    })
+                    sig_data = sig_resp.json()
+                    statuses = sig_data.get("result", {}).get("value", [])
+                    if statuses and statuses[0] is not None:
+                        if statuses[0].get("err") is None:
+                            confirmed = True
+                            break
+                        else:
+                            return {
+                                "status": "FAILED",
+                                "direction": direction,
+                                "token_mint": token_mint,
+                                "error": f"Tx landed but failed on-chain: {statuses[0]['err']}",
+                                "tx_signature": tx_id,
+                            }
+                except Exception:
+                    pass
 
         if not confirmed:
             return {
                 "status": "FAILED",
                 "direction": direction,
                 "token_mint": token_mint,
-                "error": f"Tx submitted via {submit_via} but not confirmed after 30s (tx={tx_id})",
+                "error": f"Tx submitted but not confirmed after 32s (tx={tx_id})",
                 "tx_signature": tx_id,
             }
 
@@ -208,10 +209,8 @@ async def execute_swap(
             "slippage_bps": slippage_bps,
             "route_plan": _summarize_route(quote),
             "tx_signature": tx_id,
-            "submit_via": submit_via,
-            "jito_error": jito_error_msg if submit_via != "jito" else "",
             "confirmed": True,
-            "message": f"Trade confirmed on-chain via {submit_via}. Tx: {tx_id}",
+            "message": f"Trade confirmed on-chain. Tx: {tx_id}",
         }
 
     except Exception as e:
@@ -223,7 +222,6 @@ async def execute_swap(
         }
     finally:
         await jupiter.close()
-        await jito.close()
 
 
 def _summarize_route(quote: dict[str, Any]) -> list[str]:

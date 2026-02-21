@@ -55,12 +55,11 @@ class JupiterClient:
         self,
         quote_response: dict[str, Any],
         user_public_key: str,
-        priority_fee_lamports: int = 100_000,
     ) -> dict[str, Any]:
         """Get serialized swap transaction from a quote.
 
         Returns the unsigned transaction to pass to the signer.
-        priority_fee_lamports: micro-lamports per CU. At 200k CU, 100k = ~0.02 SOL.
+        Uses Jupiter's auto priority fee (based on network conditions).
         """
         return await self._client.post(
             "/swap",
@@ -68,7 +67,7 @@ class JupiterClient:
                 "quoteResponse": quote_response,
                 "userPublicKey": user_public_key,
                 "wrapAndUnwrapSol": True,
-                "computeUnitPriceMicroLamports": priority_fee_lamports,
+                "prioritizationFeeLamports": "auto",
                 "dynamicComputeUnitLimit": True,
             },
         )

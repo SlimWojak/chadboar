@@ -67,14 +67,11 @@ def _sign_transaction(unsigned_tx_bytes: bytes, private_key_bytes: bytes) -> byt
     # Deserialize the unsigned transaction
     tx = VersionedTransaction.from_bytes(unsigned_tx_bytes)
 
-    # Sign — this creates a new transaction with the signature
-    signed_msg = tx.message
-    signature = keypair.sign_message(bytes(signed_msg))
-
-    # Reconstruct with signature
-    # The exact method depends on tx version, but the principle holds:
-    # we sign the message bytes and attach the signature
-    signed_tx = VersionedTransaction.populate(signed_msg, [signature])
+    # Sign using the VersionedTransaction constructor which handles
+    # Solana's message signing protocol correctly (domain-separated hash).
+    # Do NOT use keypair.sign_message() + populate() — that produces
+    # invalid signatures because it skips the versioned message prefix.
+    signed_tx = VersionedTransaction(tx.message, [keypair])
     return bytes(signed_tx)
 
 

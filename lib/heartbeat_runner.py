@@ -1280,7 +1280,11 @@ async def stage_finalize(
         result["errors"].append(f"Paper PnL check failed: {e}")
         result["paper_pnl_checked"] = 0
 
-    # State update
+    # Re-read state from file to pick up any position changes written by
+    # stage_score_and_execute (which writes positions atomically to disk).
+    # Without this re-read, the stale `state` dict from run_heartbeat()
+    # would overwrite live position entries.
+    state = safe_read_json(state_path)
     if dry_run:
         state["dry_run_cycles_completed"] = cycle_num
     state["last_heartbeat_time"] = datetime.utcnow().isoformat()

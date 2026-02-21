@@ -1,23 +1,76 @@
 {
   "starting_balance_sol": 14.0,
-  "current_balance_sol": 14.0,
+  "current_balance_sol": 13.7371245,
   "current_balance_usd": 0,
   "sol_price_usd": 0,
-  "positions": [],
-  "daily_exposure_sol": 0,
+  "positions": [
+    {
+      "token_mint": "9SKeKXQsPUp9iSUhVbjkfGKGEN7HR26HWjVfbtLUpump",
+      "token_symbol": "XMN",
+      "direction": "long",
+      "entry_price": 0.0,
+      "entry_amount_sol": 0.0909805,
+      "entry_amount_tokens": 318840929669,
+      "entry_time": "2026-02-21T09:40:41",
+      "peak_price": 0.0,
+      "entry_market_cap_usd": 23989.07,
+      "play_type": "graduation",
+      "tx_signature": "Z9Tp87VPu7DrMGjjQ751WZNoqghVcXaM57zivtJqdvwAc7ww36WqqNp52qFWvwcXmmd1j29yukg1eyrkdhG9ed3",
+      "thesis": "graduation: conv 65, bonding play",
+      "signals": [
+        "pulse-bonding"
+      ]
+    },
+    {
+      "token_mint": "AVz15kH3PTuNWmvRnrnaDTfxiyx2j9E12rHdLc3wpump",
+      "token_symbol": "AMURO",
+      "direction": "long",
+      "entry_price": 0.0,
+      "entry_amount_sol": 0.07370190335,
+      "entry_amount_tokens": 290423817809,
+      "entry_time": "2026-02-21T09:40:48",
+      "peak_price": 0.0,
+      "entry_market_cap_usd": 25111.35,
+      "play_type": "graduation",
+      "tx_signature": "5wZfaFFhk5215MQvSupHsEESGhf6vP1eEMSF1C5ETVqjaBDoQsMHVsUe43fLm9uYKgsCmGX3sLRTdHGGJDC8RcC9",
+      "thesis": "graduation: conv 53, bonding play",
+      "signals": [
+        "pulse-bonding"
+      ]
+    },
+    {
+      "token_mint": "9SKeKXQsPUp9iSUhVbjkfGKGEN7HR26HWjVfbtLUpump",
+      "token_symbol": "XMN",
+      "direction": "long",
+      "entry_price": 0.0,
+      "entry_amount_sol": 0.08987550000000001,
+      "entry_amount_tokens": 312370772242.0,
+      "entry_time": "2026-02-21T09:50:41.812007",
+      "peak_price": 0.0,
+      "entry_market_cap_usd": 24363.6,
+      "play_type": "graduation",
+      "tx_signature": "4aZRi1GnmwHK54W7SeFLsJNN7htPF1cZYLiVPBNXQWQ7K5h279gEpP87WCex6EwiHa7H7UXur29jj6Vy8eynASoc",
+      "thesis": "graduation: perm 65, ord 65, primary 2",
+      "signals": [
+        "pulse",
+        "warden"
+      ]
+    }
+  ],
+  "daily_exposure_sol": 0.25455790335,
   "daily_date": "2026-02-21",
   "daily_loss_pct": 0,
   "consecutive_losses": 0,
   "halted": false,
   "halted_at": "",
   "halt_reason": "",
-  "total_trades": 0,
+  "total_trades": 3,
   "total_wins": 0,
   "total_losses": 0,
-  "last_trade_time": "2026-02-21T05:01:20.724816",
-  "last_heartbeat_time": "2026-02-21T08:40:58.582154",
+  "last_trade_time": "2026-02-21T09:50:41.812007",
+  "last_heartbeat_time": "2026-02-21T09:50:53.066906",
   "dry_run_mode": false,
   "dry_run_cycles_completed": 337,
   "dry_run_target_cycles": 10,
-  "daily_graduation_count": 0
+  "daily_graduation_count": 2
 }
