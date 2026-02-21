@@ -2,6 +2,9 @@
 """
 Heartbeat Runner — Execute full HEARTBEAT.md cycle with scoring integration.
 This script is called by the agent to run steps 0-15 in a single execution.
+
+Decomposed into discrete stages with clear inputs/outputs per stage.
+Each stage records its health in cycle_health for the HEARTBEAT bead.
 """
 from __future__ import annotations
 
@@ -52,22 +55,52 @@ try:
         emit_policy_bead,
         emit_model_version_bead,
         emit_claim_bead,
+        emit_pipeline_error,
     )
     _BEADS_AVAILABLE = True
 except ImportError:
     _BEADS_AVAILABLE = False
+    emit_pipeline_error = None  # type: ignore[assignment]
+
+
+def _record_error(
+    bead_chain,
+    stage: str,
+    error: Exception,
+    context: dict | None = None,
+    cycle_start=None,
+) -> None:
+    """Record a pipeline error to the bead chain. Never raises."""
+    if emit_pipeline_error is None:
+        import sys
+        print(f"[PIPELINE_ERROR] stage={stage} error={error}", file=sys.stderr)
+        return
+    try:
+        from datetime import datetime, timezone
+        emit_pipeline_error(
+            bead_chain,
+            stage=stage,
+            error=error,
+            context=context,
+            cycle_start=cycle_start,
+            cycle_end=datetime.now(timezone.utc),
+        )
+    except Exception:
+        import sys
+        print(f"[PIPELINE_ERROR] stage={stage} error={error}", file=sys.stderr)
+
+
+def _stage_timer():
+    """Returns a callable that records elapsed ms since creation."""
+    _t0 = time.time()
+    return lambda: int((time.time() - _t0) * 1000)
 
 
 def build_health_line(result: dict[str, Any]) -> str:
-    """Build per-source diagnostic line for heartbeat messages.
-
-    Format: 📡 Nan:{cand}/{raw} | Bird:{spike}/{status} | DexS:{filt}/{raw} | Whl:{active}/{total} | Ppr:{open}
-    DexS/Pls label is dynamic based on which pulse source was used.
-    """
+    """Build per-source diagnostic line for heartbeat messages."""
     oh = result.get("oracle_health", {})
     funnel = result.get("funnel", {})
 
-    # Nansen: candidates / raw trades (or ERR)
     if oh.get("nansen_error"):
         nan_part = "Nan:0/ERR"
     else:
@@ -75,7 +108,6 @@ def build_health_line(result: dict[str, Any]) -> str:
         nan_raw = oh.get("nansen_raw_trades", funnel.get("nansen_raw", 0))
         nan_part = f"Nan:{nan_cand}/{nan_raw}"
 
-    # Narrative: spike count / source status
     dexs_status = result.get("dexscreener_status", "")
     birdeye_status = result.get("birdeye_status", "SKIP")
     spike_count = funnel.get("narrative_with_spike", 0)
@@ -86,7 +118,6 @@ def build_health_line(result: dict[str, Any]) -> str:
     else:
         bird_part = f"Nar:{spike_count}/ERR"
 
-    # Pulse/DexScreener: filtered / raw (dynamic label)
     pulse_source = oh.get("pulse_source", "dexscreener")
     pulse_label = "DexS" if pulse_source == "dexscreener" else "Pls"
     if oh.get("pulse_error") and not oh.get("pulse_filtered"):
@@ -96,16 +127,14 @@ def build_health_line(result: dict[str, Any]) -> str:
         p_raw = oh.get("pulse_raw", funnel.get("pulse_raw", 0))
         pulse_part = f"{pulse_label}:{p_filt}/{p_raw}"
 
-    # Whale: active / total
     whl_active = oh.get("whale_active", 0)
     whl_total = oh.get("whale_total", 0)
     whl_part = f"Whl:{whl_active}/{whl_total}"
 
-    # Paper trades: open count
     paper_open = result.get("paper_open", 0)
     ppr_part = f"Ppr:{paper_open}"
 
-    return f"📡 {nan_part} | {bird_part} | {pulse_part} | {whl_part} | {ppr_part}"
+    return f"\U0001f4e1 {nan_part} | {bird_part} | {pulse_part} | {whl_part} | {ppr_part}"
 
 
 async def _send_s5_alert(
@@ -118,13 +147,13 @@ async def _send_s5_alert(
     if not token or not channel_id:
         return
     text = (
-        f"⚖️ S5 ARBITRATION ALERT\n\n"
+        f"\u2696\ufe0f S5 ARBITRATION ALERT\n\n"
         f"Token: {symbol} ({mint[:12]}...)\n"
         f"Conflict: {conflict}\n"
         f"Scores: ordering={score.ordering_score}, "
         f"permission={score.permission_score}\n"
         f"Red flags: {score.red_flags}\n\n"
-        f"Grok wanted TRADE → system downgraded to WATCHLIST.\n"
+        f"Grok wanted TRADE \u2192 system downgraded to WATCHLIST.\n"
         f"Override? Send manual trade command if you disagree."
     )
     try:
@@ -133,18 +162,18 @@ async def _send_s5_alert(
                 f"https://api.telegram.org/bot{token}/sendMessage",
                 json={"chat_id": channel_id, "text": text},
             )
-    except Exception:
-        pass  # Best-effort alert
+    except Exception as e:
+        _record_error(None, "execution", e, {"detail": "S5 Telegram alert failed", "symbol": symbol})
 
 
 # Grok alpha override system prompt
 GROK_ALPHA_PROMPT = """You are ChadBoar's alpha brain. DENSE YAML only.
 Given signal data for a token, decide if this is alpha worth trading.
-Rug Warden already PASSED — safety is cleared. Your job: pattern match.
+Rug Warden already PASSED \u2014 safety is cleared. Your job: pattern match.
 
 Respond with EXACTLY this YAML format (no markdown fences):
 verdict: TRADE | NOPE
-reasoning: <one sentence — pattern match + conviction chain>
+reasoning: <one sentence \u2014 pattern match + conviction chain>
 confidence: <0.0-1.0>
 
 TRADE = upgrade to AUTO_EXECUTE. NOPE = stay on WATCHLIST.
@@ -152,73 +181,43 @@ Only say TRADE if you see genuine convergence (whale + narrative + volume).
 Be ruthless. Most things are NOPE."""
 
 
-async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
-    """Execute full heartbeat cycle with time budget.
-    
-    Args:
-        timeout_seconds: Maximum execution time before switching to observe-only mode
-    
-    Returns:
-        Dict with cycle results, errors, and timeout flag
-    """
-    start_time = time.time()
-    
-    # Wrapper to check time budget
-    def time_remaining() -> float:
-        return timeout_seconds - (time.time() - start_time)
-    
-    # Load state with file locking (R5 fix)
-    state_path = Path("state/state.json")
-    state = safe_read_json(state_path)
-    
-    dry_run = state.get("dry_run_mode", True)
-    cycle_num = state.get("dry_run_cycles_completed", 0) + 1
+# ── Stage Functions ─────────────────────────────────────────────────
 
-    # Init structured bead chain (best-effort)
-    bead_chain = None
-    if _BEADS_AVAILABLE:
-        try:
-            bead_chain = BeadChain()
-        except Exception:
-            pass
 
-    # Cycle timing for bi-temporal bead fields
-    cycle_start = datetime.now(timezone.utc)
+def stage_init_context(
+    bead_chain, cycle_start: datetime, cycle_num: int,
+) -> None:
+    """Emit POLICY + MODEL_VERSION beads on first boot or config change.
+    Check for watchdog alerts. Mutates nothing except bead chain."""
+    if not bead_chain:
+        return
 
-    # Collect bead IDs for lineage threading
-    fact_bead_ids: list[str] = []
-    claim_bead_ids: list[str] = []
-    proposal_count = 0
+    # Check if context beads need emitting
+    _should_emit = False
+    try:
+        existing_policy = bead_chain.query_by_type(BeadType.POLICY, limit=1)
+        existing_model = bead_chain.query_by_type(BeadType.MODEL_VERSION, limit=1)
+        if not existing_policy or not existing_model:
+            _should_emit = True
+        else:
+            import hashlib as _hl
+            risk_path = Path("config/risk.yaml")
+            if risk_path.exists():
+                current_hash = _hl.sha256(risk_path.read_bytes()).hexdigest()[:16]
+                last_policy = existing_policy[0]
+                last_hash = last_policy.content.get("rules", {}).get("_config_hash", "")
+                if current_hash != last_hash:
+                    _should_emit = True
+    except Exception as e:
+        _record_error(bead_chain, "bead_write", e, {"detail": "Policy/model check failed, will re-emit"}, cycle_start)
+        _should_emit = True
 
-    # POLICY + MODEL_VERSION beads — emit on first bead-system boot or config change.
-    # Uses a separate flag in beads.db (not cycle_num, which is dry-run era counter).
-    _should_emit_context = False
-    if bead_chain:
-        try:
-            existing_policy = bead_chain.query_by_type(BeadType.POLICY, limit=1)
-            existing_model = bead_chain.query_by_type(BeadType.MODEL_VERSION, limit=1)
-            if not existing_policy or not existing_model:
-                _should_emit_context = True
-            else:
-                # Re-emit if risk.yaml has changed since last POLICY bead
-                import hashlib as _hl
-                risk_path = Path("config/risk.yaml")
-                if risk_path.exists():
-                    current_hash = _hl.sha256(risk_path.read_bytes()).hexdigest()[:16]
-                    last_policy = existing_policy[0]
-                    last_hash = last_policy.content.get("rules", {}).get("_config_hash", "")
-                    if current_hash != last_hash:
-                        _should_emit_context = True
-        except Exception:
-            _should_emit_context = True  # On error, emit to be safe
-
-    if bead_chain and _should_emit_context:
+    if _should_emit:
         try:
             import yaml
             risk_path = Path("config/risk.yaml")
             if risk_path.exists():
                 risk_rules = yaml.safe_load(risk_path.read_text()) or {}
-                # Stamp config hash for change detection
                 import hashlib as _hl
                 risk_rules["_config_hash"] = _hl.sha256(
                     risk_path.read_bytes()
@@ -230,8 +229,8 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     rules=risk_rules,
                     authority="G",
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            _record_error(bead_chain, "bead_write", e, {"bead_type": "POLICY"}, cycle_start)
         try:
             emit_model_version_bead(
                 bead_chain,
@@ -240,67 +239,40 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                 purpose="heartbeat",
                 config_snapshot={"provider": "openrouter", "model": "x-ai/grok-4-1-fast"},
             )
-        except Exception:
-            pass
+        except Exception as e:
+            _record_error(bead_chain, "bead_write", e, {"bead_type": "MODEL_VERSION"}, cycle_start)
 
-    # Funnel diagnostics — tracks signal flow for flight recorder
-    funnel = {
-        "nansen_raw": 0,
-        "nansen_filtered": 0,
-        "mobula_raw": 0,
-        "mobula_resolved": 0,
-        "pulse_raw": 0,
-        "pulse_filtered": 0,
-        "narrative_raw": 0,
-        "narrative_with_spike": 0,
-        "reached_scorer": 0,
-        "scored_discard": 0,
-        "scored_paper_trade": 0,
-        "scored_watchlist": 0,
-        "scored_execute": 0,
-        "scored_veto": 0,
-    }
+    # Check for watchdog alert (hallucination detection)
+    watchdog_alert_path = Path("state/watchdog_alert.json")
+    if watchdog_alert_path.exists():
+        try:
+            _wd_alert = json.loads(watchdog_alert_path.read_text())
+            emit_claim_bead(
+                bead_chain,
+                conclusion=(
+                    f"Watchdog detected heartbeat hallucination: canary stale for "
+                    f"{_wd_alert.get('stale_since_minutes', '?')} minutes"
+                ),
+                reasoning_trace=(
+                    f"Watchdog detected at {_wd_alert.get('detected_at', '?')}. "
+                    f"Telegram alert sent: {_wd_alert.get('alert_sent', False)}"
+                ),
+                confidence_basis="watchdog_canary",
+                domain="watchdog_alert",
+                cycle_start=cycle_start,
+                cycle_end=datetime.now(timezone.utc),
+            )
+            watchdog_alert_path.unlink(missing_ok=True)
+        except Exception as e:
+            _record_error(bead_chain, "state_update", e, {"detail": "Failed to process watchdog alert"}, cycle_start)
 
-    result = {
-        "cycle": cycle_num,
-        "timestamp": datetime.utcnow().isoformat(),
-        "dry_run": dry_run,
-        "opportunities": [],
-        "decisions": [],
-        "errors": [],
-        "exits": [],
-        "timeout_triggered": False,
-        "observe_only": False,
-        "data_completeness": 1.0,
-        "sources_failed": [],
-        "funnel": funnel,
-    }
-    
-    # Check time budget before starting
-    if time_remaining() < 10:
-        result["timeout_triggered"] = True
-        result["observe_only"] = True
-        result["errors"].append(f"Time budget exhausted before start: {time_remaining():.1f}s remaining")
-        return result
-    
-    # Step 1c: Chain Verification (Flight Recorder integrity check)
-    try:
-        from lib.chain.verify import verify_on_boot, send_tamper_alert
-        chain_status = verify_on_boot()
-        result["chain_status"] = chain_status["status"]
-        if chain_status["status"] == "TAMPERED":
-            await send_tamper_alert(chain_status["details"])
-            result["errors"].append(f"CHAIN TAMPERED: {chain_status['details']}")
-    except Exception as e:
-        result["errors"].append(f"Chain verification error: {e}")
 
-    # Step 7: Position Watchdog (runs before new signals to handle exits first)
-    if time_remaining() < 10:
-        result["timeout_triggered"] = True
-        result["observe_only"] = True
-        result["errors"].append("Timeout before watchdog step")
-        return result
-    
+async def stage_watchdog(
+    state: dict, bead_chain, result: dict, cycle_health: dict,
+    time_remaining,
+) -> None:
+    """Run position watchdog. Mutates result['exits'] and cycle_health."""
+    _wd_elapsed = _stage_timer()
     birdeye_watchdog = BirdeyeClient()
     try:
         exit_decisions = await asyncio.wait_for(
@@ -308,24 +280,33 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             timeout=min(30, time_remaining())
         )
         result["exits"] = exit_decisions
-        # TODO: Execute exits in non-dry-run mode
+        cycle_health["stages"]["watchdog"] = {
+            "status": "ok",
+            "exits_found": len(exit_decisions),
+            "positions_checked": len(state.get("positions", [])),
+            "duration_ms": _wd_elapsed(),
+        }
     except asyncio.TimeoutError:
         result["errors"].append("Watchdog step timeout")
         result["timeout_triggered"] = True
         result["observe_only"] = True
+        cycle_health["stages"]["watchdog"] = {"status": "timeout", "duration_ms": _wd_elapsed()}
     except Exception as e:
         result["errors"].append(f"Watchdog error: {e}")
+        cycle_health["stages"]["watchdog"] = {"status": "failed", "error": str(e), "duration_ms": _wd_elapsed()}
     finally:
         await birdeye_watchdog.close()
-    
-    # Step 5: Smart Money Oracle (TGM pipeline)
-    if time_remaining() < 10:
-        result["timeout_triggered"] = True
-        result["observe_only"] = True
-        result["errors"].append("Timeout before oracle step")
-        return result
 
+
+async def stage_oracle(
+    bead_chain, result: dict, funnel: dict, cycle_start: datetime,
+    cycle_health: dict, time_remaining,
+) -> tuple[list, bool]:
+    """Query oracle sources. Returns (oracle_signals, oracle_failed)."""
+    _oracle_elapsed = _stage_timer()
     oracle_failed = False
+    oracle_signals: list = []
+
     try:
         oracle_result = await asyncio.wait_for(
             query_oracle(),
@@ -339,7 +320,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             result["oracle_diagnostics"] = oracle_result.get("diagnostics", [])
             result["oracle_health"] = oracle_result.get("source_health", {})
 
-            # Extract Mobula whale token candidates into scoring loop
+            # Merge Mobula whale signals
             mobula_signals = oracle_result.get("mobula_signals", [])
             existing_mints = {s.get("token_mint") for s in oracle_signals}
             for ms in mobula_signals:
@@ -358,7 +339,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     })
                     existing_mints.add(ms["token_mint"])
 
-            # Extract Pulse candidates (Phase 0) into scoring loop
+            # Merge Pulse candidates
             pulse_signals = oracle_result.get("pulse_signals", [])
             for ps in pulse_signals:
                 if ps.get("token_mint") and ps["token_mint"] not in existing_mints:
@@ -374,7 +355,6 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         "dca_count": 0,
                         "discovery_source": ps.get("discovery_source", "pulse-bonded"),
                         "market_cap_usd": ps.get("market_cap_usd", 0.0),
-                        # Preserve pulse-specific fields for scoring
                         "pulse_ghost_metadata": ps.get("pulse_ghost_metadata", False),
                         "pulse_organic_ratio": ps.get("pulse_organic_ratio", 1.0),
                         "pulse_bundler_pct": ps.get("pulse_bundler_pct", 0.0),
@@ -387,22 +367,19 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     })
                     existing_mints.add(ps["token_mint"])
         else:
-            oracle_signals = []
             oracle_failed = True
             result["sources_failed"].append("oracle")
             result["errors"].append(f"Oracle error: {oracle_result.get('error', 'unknown')}")
     except asyncio.TimeoutError:
         result["errors"].append("Oracle step timeout")
-        oracle_signals = []
         oracle_failed = True
         result["sources_failed"].append("oracle")
     except Exception as e:
         result["errors"].append(f"Oracle error: {e}")
-        oracle_signals = []
         oracle_failed = True
         result["sources_failed"].append("oracle")
-    
-    # Funnel: oracle source counts
+
+    # Funnel counts
     if not oracle_failed:
         nansen_sigs = oracle_result.get("nansen_signals", [])
         mobula_sigs = oracle_result.get("mobula_signals", [])
@@ -414,7 +391,20 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         funnel["pulse_raw"] = len(pulse_sigs)
         funnel["pulse_filtered"] = len([s for s in pulse_sigs if s.get("token_mint")])
 
-    # FACT bead: Oracle data source summary
+    # Record stage health
+    _oracle_source_detail = (
+        f"nansen:{funnel['nansen_filtered']}/{funnel['nansen_raw']}, "
+        f"mobula:{funnel['mobula_resolved']}/{funnel['mobula_raw']}, "
+        f"pulse:{funnel['pulse_filtered']}/{funnel['pulse_raw']}"
+    ) if not oracle_failed else "all sources failed"
+    cycle_health["stages"]["oracle"] = {
+        "status": "failed" if oracle_failed else "ok",
+        "detail": _oracle_source_detail,
+        "candidates_found": len(oracle_signals),
+        "duration_ms": _oracle_elapsed(),
+    }
+
+    # FACT bead
     if bead_chain:
         _oracle_status = "ERR" if oracle_failed else "OK"
         _fid = emit_fact_bead(
@@ -433,17 +423,23 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             source_status=_oracle_status,
         )
         if _fid:
-            fact_bead_ids.append(_fid)
+            result.setdefault("_fact_bead_ids", []).append(_fid)
 
-    # Step 6: Narrative Hunter (on-chain volume only — X API disabled)
-    # Primary: DexScreener (free). Fallback: Birdeye (paid).
+    return oracle_signals, oracle_failed
+
+
+async def stage_narrative(
+    bead_chain, result: dict, funnel: dict, cycle_start: datetime,
+    cycle_health: dict,
+) -> tuple[list, bool, NarrativeTracker]:
+    """Query narrative sources. Returns (narrative_signals, narrative_failed, tracker)."""
+    _nar_elapsed = _stage_timer()
     narrative_failed = False
     narrative_tracker = NarrativeTracker()
     birdeye_status = "SKIP"
     dexscreener_status = "OK"
-    narrative_signals = []
+    narrative_signals: list = []
 
-    # Primary: DexScreener — volume spikes from free API
     dexscreener_narrative = DexScreenerClient()
     try:
         dex_candidates = await dexscreener_narrative.get_solana_candidates()
@@ -474,7 +470,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         result["errors"].append(f"DexScreener narrative error: {e}")
         narrative_signals = []
 
-        # Fallback: Birdeye (paid)
+        # Fallback: Birdeye
         birdeye = BirdeyeClient()
         try:
             new_pairs = await birdeye.get_new_pairs(limit=20)
@@ -494,8 +490,8 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             resp_body = ""
             try:
                 resp_body = e.response.text[:500]
-            except Exception:
-                pass
+            except Exception as e2:
+                _record_error(bead_chain, "narrative_hunter", e2, {"detail": "Failed to read Birdeye error response"}, cycle_start)
             birdeye_status = str(e.response.status_code)
             result["errors"].append(f"Birdeye fallback error: {e} | body: {resp_body}")
             narrative_signals = []
@@ -511,17 +507,28 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             await birdeye.close()
     finally:
         await dexscreener_narrative.close()
+
     result["birdeye_status"] = birdeye_status
     result["dexscreener_status"] = dexscreener_status
-    
-    # Funnel: narrative counts
+
+    # Funnel counts
     funnel["narrative_raw"] = len(narrative_signals)
     funnel["narrative_with_spike"] = len([
         s for s in narrative_signals
         if float(s.get("volume_vs_avg", "0x").replace("x", "")) >= 2.0
     ])
 
-    # FACT bead: Narrative/DexScreener data source summary
+    # Record stage health
+    _nar_detail = f"dexscreener:{dexscreener_status}, birdeye:{birdeye_status}"
+    cycle_health["stages"]["narrative"] = {
+        "status": "failed" if narrative_failed else ("partial" if dexscreener_status != "OK" else "ok"),
+        "detail": _nar_detail,
+        "signals_found": funnel["narrative_raw"],
+        "volume_spikes": funnel["narrative_with_spike"],
+        "duration_ms": _nar_elapsed(),
+    }
+
+    # FACT bead
     if bead_chain:
         _nar_status = "ERR" if narrative_failed else "OK"
         _fid = emit_fact_bead(
@@ -538,34 +545,49 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             source_status=_nar_status,
         )
         if _fid:
-            fact_bead_ids.append(_fid)
+            result.setdefault("_fact_bead_ids", []).append(_fid)
 
-    # PARTIAL DATA PENALTY (A2): Calculate data completeness
+    return narrative_signals, narrative_failed, narrative_tracker
+
+
+async def stage_score_and_execute(
+    oracle_signals: list, narrative_signals: list,
+    narrative_tracker: NarrativeTracker,
+    oracle_failed: bool, narrative_failed: bool,
+    state: dict, bead_chain, result: dict, funnel: dict,
+    cycle_start: datetime, cycle_health: dict,
+    state_path: Path, dry_run: bool,
+) -> int:
+    """Score candidates, apply warden, emit beads, execute trades.
+
+    Returns proposal_count. Mutates result, funnel, state (on live trades).
+    """
+    _scoring_elapsed = _stage_timer()
+
+    # Data completeness penalty
     sources_failed_count = len(result["sources_failed"])
-    
     if sources_failed_count >= 2:
-        # ≥2 primary sources unavailable → OBSERVE-ONLY MODE
         result["observe_only"] = True
         result["data_completeness"] = 0.0
-        result["decisions"].append("OBSERVE-ONLY MODE: ≥2 primary sources failed (oracle, narrative)")
-        # Skip entry logic, return early after watchdog
+        result["decisions"].append("OBSERVE-ONLY MODE: \u22652 primary sources failed (oracle, narrative)")
         try:
             result["paper_open"] = len([t for t in _load_paper_trades() if not t.get("closed")])
-        except Exception:
+        except Exception as e:
+            _record_error(bead_chain, "paper_trade", e, {"detail": "Failed to load paper trades for observe-only"}, cycle_start)
             result["paper_open"] = 0
         result["health_line"] = build_health_line(result)
-        return result
+        cycle_health["stages"]["scoring"] = {"status": "skipped:observe_only", "duration_ms": _scoring_elapsed()}
+        return 0
     elif oracle_failed:
-        # Oracle missing → 0.7x penalty (30% reduction)
         result["data_completeness"] = 0.7
     elif narrative_failed:
-        # Narrative missing → 0.8x penalty (20% reduction)
         result["data_completeness"] = 0.8
     else:
-        # All sources available
         result["data_completeness"] = 1.0
-    
-    # CLAIM bead: Pipeline regime assessment (emitted every cycle)
+
+    # Pipeline regime CLAIM bead
+    fact_bead_ids = result.get("_fact_bead_ids", [])
+    claim_bead_ids: list[str] = []
     if bead_chain and fact_bead_ids:
         try:
             _total_candidates = len(oracle_signals) + funnel["narrative_with_spike"]
@@ -595,25 +617,22 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             )
             if _claim_id:
                 claim_bead_ids.append(_claim_id)
-        except Exception:
-            pass
+        except Exception as e:
+            _record_error(bead_chain, "bead_write", e, {"bead_type": "CLAIM", "domain": "pipeline_regime"}, cycle_start)
 
-    # Step 9: Conviction Scoring
+    # Scoring setup
     scorer = ConvictionScorer()
+    proposal_count = 0
 
-    # Get edge bank bead count for cold-start logic
     edge_bank_bead_count = 0
     try:
         from lib.chain.bead_chain import get_chain_stats
         chain_stats = get_chain_stats()
         edge_bank_bead_count = chain_stats.get("total_beads", 0)
-    except Exception:
-        pass  # Chain unavailable — edge bank stays disabled
+    except Exception as e:
+        _record_error(bead_chain, "data_fetch", e, {"detail": "Edge bank chain stats unavailable"}, cycle_start)
 
-    # Get SOL price from state
     sol_price_usd = float(state.get("sol_price_usd", 78.0))
-
-    # Track graduation plays this cycle (for daily sublimit)
     daily_graduation_count = int(state.get("daily_graduation_count", 0))
 
     # Merge signals by token mint
@@ -622,24 +641,19 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         all_mints.add(sig["token_mint"])
     for sig in narrative_signals:
         all_mints.add(sig["token_mint"])
-    
-    # Create new Birdeye client for red flag checks
+
     birdeye_red_flags = BirdeyeClient()
-    
     funnel["reached_scorer"] = len(all_mints)
 
     for mint in all_mints:
-        # Gather inputs
         oracle_sig = next((s for s in oracle_signals if s["token_mint"] == mint), None)
         narrative_sig = next((s for s in narrative_signals if s["token_mint"] == mint), None)
-        
-        # Use buyer_depth.smart_money_buyers for more accurate whale count when available
+
         if oracle_sig and oracle_sig.get("buyer_depth", {}).get("smart_money_buyers", 0) > 0:
             whales = oracle_sig["buyer_depth"]["smart_money_buyers"]
         else:
             whales = oracle_sig["wallet_count"] if oracle_sig else 0
 
-        # Extract TGM flow intelligence fields
         flow_intel = (oracle_sig or {}).get("flow_intel", {})
         buyer_depth = (oracle_sig or {}).get("buyer_depth", {})
         exchange_outflow_usd = float(flow_intel.get("exchange_net_usd", 0))
@@ -656,9 +670,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             volume_spike = float(volume_str.replace("x", ""))
             kol_detected = narrative_sig.get("kol_mentions", 0) > 0
             age_minutes = narrative_tracker.get_age_minutes(mint)
-        
-        # Detect play type early so we can pass it to Rug Warden
-        # (Need pulse fields to detect graduation vs accumulation)
+
         pre_play_type = detect_play_type(SignalInput(
             smart_money_whales=whales,
             pulse_organic_ratio=float((oracle_sig or {}).get("pulse_organic_ratio", 1.0)),
@@ -670,32 +682,20 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         ))
         pre_liquidity = float((oracle_sig or {}).get("liquidity_usd", 0))
 
-        # Run Rug Warden with play-type-aware thresholds
         rug_status = await run_rug_warden(mint, play_type=pre_play_type, pre_liquidity_usd=pre_liquidity or None)
-        
-        # RED FLAG CHECKS (Phase 3)
+
         concentrated_vol = False
         dumper_count = 0
-        
         try:
-            # Check concentrated volume
             trades_data = await birdeye_red_flags.get_trades(mint, limit=100)
             concentrated_vol, vol_reason = check_concentrated_volume(trades_data)
         except Exception as e:
             result["errors"].append(f"Volume concentration check failed for {mint[:8]}: {e}")
-        
-        # TODO: Dumper wallet check requires async wallet history fetching
-        # For now, dumper_count = 0 (stub)
-        
-        # TIME MISMATCH CHECK (Phase 4 / B2)
-        # Oracle accumulation detected + Narrative age <5min → too fast, suspicious
+
         time_mismatch_detected = (
-            whales >= 3 and  # Oracle signal present
-            volume_spike >= 5.0 and  # Narrative signal present
-            age_minutes < 5  # Narrative is brand new
+            whales >= 3 and volume_spike >= 5.0 and age_minutes < 5
         )
-        
-        # Extract pulse-specific fields if this signal came from Pulse
+
         pulse_ghost = (oracle_sig or {}).get("pulse_ghost_metadata", False)
         pulse_organic = float((oracle_sig or {}).get("pulse_organic_ratio", 1.0))
         pulse_bundler = float((oracle_sig or {}).get("pulse_bundler_pct", 0.0))
@@ -707,7 +707,6 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         pulse_ds_boosted = bool((oracle_sig or {}).get("pulse_dexscreener_boosted", False))
         market_cap = float((oracle_sig or {}).get("market_cap_usd", 0.0))
 
-        # Enrichment: Birdeye holder delta (single call per candidate, well within rate limits)
         holder_delta = 0.0
         try:
             holder_data = await birdeye_red_flags.get_holder_count(mint)
@@ -718,14 +717,13 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         except Exception as e:
             result["errors"].append(f"Holder delta fetch failed for {mint[:8]}: {e}")
 
-        # Score
         signal_input = SignalInput(
             smart_money_whales=whales,
             narrative_volume_spike=volume_spike,
             narrative_kol_detected=kol_detected,
             narrative_age_minutes=age_minutes,
             rug_warden_status=rug_status,
-            edge_bank_match_pct=0.0,  # No beads yet
+            edge_bank_match_pct=0.0,
             exchange_outflow_usd=exchange_outflow_usd,
             fresh_wallet_inflow_usd=fresh_wallet_inflow_usd,
             smart_money_buy_volume_usd=smart_money_buy_vol,
@@ -742,7 +740,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             pulse_trending_score=pulse_trending,
             pulse_dexscreener_boosted=pulse_ds_boosted,
         )
-        
+
         score = scorer.score(
             signal_input,
             pot_balance_sol=state["current_balance_sol"],
@@ -754,30 +752,8 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             daily_graduation_count=daily_graduation_count,
             sol_price_usd=sol_price_usd,
         )
-        
-        opportunity = {
-            "token_mint": mint,
-            "token_symbol": (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN"),
-            "ordering_score": score.ordering_score,
-            "permission_score": score.permission_score,
-            "breakdown": score.breakdown,
-            "red_flags": score.red_flags,
-            "primary_sources": score.primary_sources,
-            "recommendation": score.recommendation,
-            "position_size_sol": score.position_size_sol,
-            "reasoning": score.reasoning,
-            "signals": {
-                "whales": whales,
-                "volume_spike": volume_spike,
-                "kol": kol_detected,
-                "age_min": age_minutes,
-                "rug": rug_status,
-            }
-        }
-        
-        # GROK ALPHA OVERRIDE (Step 9b)
-        # After scoring, if WATCHLIST + rug warden PASS, ask Grok for alpha call.
-        # Grok can upgrade WATCHLIST → AUTO_EXECUTE. Cannot override VETO.
+
+        # Grok alpha override
         grok_override = None
         if score.recommendation == "WATCHLIST" and rug_status == "PASS":
             try:
@@ -800,43 +776,36 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                 if grok_result["status"] == "OK":
                     grok_content = grok_result["content"].strip()
                     grok_override = grok_content
-                    # Parse TRADE/NOPE from Grok response
                     if "verdict: TRADE" in grok_content or "verdict:TRADE" in grok_content:
-                        # Grok says TRADE — upgrade recommendation
                         score.recommendation = "AUTO_EXECUTE"
                         score.reasoning += f" | GROK OVERRIDE: {grok_content}"
                     else:
-                        score.reasoning += f" | GROK: NOPE — staying WATCHLIST"
+                        score.reasoning += f" | GROK: NOPE \u2014 staying WATCHLIST"
                 else:
                     result["errors"].append(f"Grok override failed: {grok_result.get('error', 'unknown')}")
             except Exception as e:
                 result["errors"].append(f"Grok override error for {mint[:8]}: {e}")
 
-        # S5 ARBITRATION: Grok upgraded to AUTO_EXECUTE, but guards/flags conflict
+        # S5 Arbitration
         token_symbol = (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN")
         if (score.recommendation == "AUTO_EXECUTE"
                 and grok_override
                 and ("verdict: TRADE" in grok_override or "verdict:TRADE" in grok_override)):
             s5_conflict = None
-
-            # Conflict 1: Divergence damping fired (no narrative backing)
             if 'divergence_damping' in score.red_flags:
                 s5_conflict = (
                     f"S2 damping fired (no narrative) but Grok says TRADE "
                     f"for {token_symbol}"
                 )
-
-            # Conflict 2: Permission score too low despite Grok TRADE
             elif score.permission_score < 50:
                 s5_conflict = (
                     f"Grok says TRADE but permission score only "
                     f"{score.permission_score} for {token_symbol}"
                 )
-
             if s5_conflict:
                 score.recommendation = "WATCHLIST"
                 score.reasoning += f" | S5 ARBITRATION: {s5_conflict}"
-                result["decisions"].append(f"⚖️ S5 CONFLICT: {s5_conflict}")
+                result["decisions"].append(f"\u2696\ufe0f S5 CONFLICT: {s5_conflict}")
                 await _send_s5_alert(token_symbol, mint, s5_conflict, score)
 
         opportunity = {
@@ -867,7 +836,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             },
         }
 
-        # Emit SIGNAL bead (v0.2 — replaces old VERDICT bead)
+        # Emit SIGNAL bead
         signal_bead_id = ""
         if bead_chain:
             _wv = rug_status if rug_status in ("PASS", "WARN", "FAIL") else "UNKNOWN"
@@ -887,11 +856,11 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                 claim_bead_ids=claim_bead_ids,
             )
         opportunity["signal_bead_id"] = signal_bead_id
-        opportunity["verdict_bead_id"] = signal_bead_id  # backward compat
+        opportunity["verdict_bead_id"] = signal_bead_id
 
         result["opportunities"].append(opportunity)
 
-        # Funnel: track verdict counts
+        # Funnel counts
         if score.recommendation == "VETO":
             funnel["scored_veto"] += 1
         elif score.recommendation == "DISCARD":
@@ -903,7 +872,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         elif score.recommendation == "AUTO_EXECUTE":
             funnel["scored_execute"] += 1
 
-        # Decision logic — emit PROPOSAL or PROPOSAL_REJECTED per candidate
+        # Decision logic
         if score.recommendation == "VETO":
             if bead_chain and signal_bead_id:
                 _wd = {"rug_status": rug_status, "reasoning": score.reasoning}
@@ -917,7 +886,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     warden_detail=_wd,
                     risk_metrics={"pot_sol": state.get("current_balance_sol", 0)},
                 )
-            result["decisions"].append(f"🐗 VETO: {mint[:8]} — {score.reasoning}")
+            result["decisions"].append(f"\U0001f417 VETO: {mint[:8]} \u2014 {score.reasoning}")
         elif score.recommendation == "DISCARD":
             if bead_chain and signal_bead_id:
                 emit_proposal_rejected_bead(
@@ -929,27 +898,22 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     scoring_breakdown=score.breakdown,
                     risk_metrics={"pot_sol": state.get("current_balance_sol", 0)},
                 )
-            result["decisions"].append(f"🐗 NOPE: {mint[:8]} — permission {score.permission_score} < {scorer.thresholds.get('paper_trade', 30)}")
+            result["decisions"].append(f"\U0001f417 NOPE: {mint[:8]} \u2014 permission {score.permission_score} < {scorer.thresholds.get('paper_trade', 30)}")
         elif score.recommendation == "PAPER_TRADE":
             token_symbol = (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN")
             try:
-                # Use market_cap (already extracted at line 675); this is FDV/mcap for entry reference
                 _entry_fdv = market_cap
                 paper_candidate = {
-                    "token_mint": mint,
-                    "token_symbol": token_symbol,
+                    "token_mint": mint, "token_symbol": token_symbol,
                     "price_usd": _entry_fdv,
                     "liquidity_usd": float((oracle_sig or {}).get("liquidity_usd", 0)),
                     "volume_usd": float((oracle_sig or {}).get("volume_usd", (oracle_sig or {}).get("total_buy_usd", 0))),
                     "source": (oracle_sig or {}).get("source", "unknown"),
                     "discovery_source": (oracle_sig or {}).get("discovery_source", "unknown"),
                     "score": {
-                        "play_type": score.play_type,
-                        "permission_score": score.permission_score,
-                        "ordering_score": score.ordering_score,
-                        "recommendation": score.recommendation,
-                        "breakdown": score.breakdown,
-                        "red_flags": score.red_flags,
+                        "play_type": score.play_type, "permission_score": score.permission_score,
+                        "ordering_score": score.ordering_score, "recommendation": score.recommendation,
+                        "breakdown": score.breakdown, "red_flags": score.red_flags,
                     },
                     "warden": {"verdict": rug_status},
                     "verdict_bead_id": signal_bead_id,
@@ -958,9 +922,8 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                 if rug_status in ("PASS", "WARN"):
                     try:
                         write_paper_bead(trade_record)
-                    except Exception:
-                        pass
-                # Emit PROPOSAL bead (v0.2 — replaces old TRADE bead)
+                    except Exception as e:
+                        _record_error(bead_chain, "paper_trade", e, {"token_mint": mint, "detail": "write_paper_bead failed"}, cycle_start)
                 proposal_bead_id = ""
                 if bead_chain and signal_bead_id:
                     proposal_bead_id = emit_proposal_bead(
@@ -974,13 +937,13 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         proposal_count += 1
                     update_trade_bead_id(trade_record["id"], proposal_bead_id, signal_bead_id)
                 result["decisions"].append(
-                    f"🐗📝 PAPER: {token_symbol} ({mint[:8]}) — [{score.play_type}] "
+                    f"\U0001f417\U0001f4dd PAPER: {token_symbol} ({mint[:8]}) \u2014 [{score.play_type}] "
                     f"permission {score.permission_score}, ordering {score.ordering_score}"
                 )
             except Exception as e:
                 result["errors"].append(f"Paper trade logging failed for {mint[:8]}: {e}")
                 result["decisions"].append(
-                    f"🐗📝 PAPER (log failed): {mint[:8]} — [{score.play_type}] "
+                    f"\U0001f417\U0001f4dd PAPER (log failed): {mint[:8]} \u2014 [{score.play_type}] "
                     f"permission {score.permission_score}"
                 )
         elif score.recommendation == "WATCHLIST":
@@ -988,20 +951,16 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             try:
                 _entry_fdv = market_cap
                 paper_candidate = {
-                    "token_mint": mint,
-                    "token_symbol": token_symbol,
+                    "token_mint": mint, "token_symbol": token_symbol,
                     "price_usd": _entry_fdv,
                     "liquidity_usd": float((oracle_sig or {}).get("liquidity_usd", 0)),
                     "volume_usd": float((oracle_sig or {}).get("volume_usd", (oracle_sig or {}).get("total_buy_usd", 0))),
                     "source": (oracle_sig or {}).get("source", "unknown"),
                     "discovery_source": (oracle_sig or {}).get("discovery_source", "unknown"),
                     "score": {
-                        "play_type": score.play_type,
-                        "permission_score": score.permission_score,
-                        "ordering_score": score.ordering_score,
-                        "recommendation": score.recommendation,
-                        "breakdown": score.breakdown,
-                        "red_flags": score.red_flags,
+                        "play_type": score.play_type, "permission_score": score.permission_score,
+                        "ordering_score": score.ordering_score, "recommendation": score.recommendation,
+                        "breakdown": score.breakdown, "red_flags": score.red_flags,
                     },
                     "warden": {"verdict": rug_status},
                     "verdict_bead_id": signal_bead_id,
@@ -1010,9 +969,8 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                 if rug_status in ("PASS", "WARN"):
                     try:
                         write_paper_bead(trade_record)
-                    except Exception:
-                        pass
-                # Emit PROPOSAL bead (v0.2)
+                    except Exception as e:
+                        _record_error(bead_chain, "paper_trade", e, {"token_mint": mint, "detail": "write_paper_bead failed (watchlist)"}, cycle_start)
                 if bead_chain and signal_bead_id:
                     _prop_id = emit_proposal_bead(
                         bead_chain, signal_bead_id=signal_bead_id,
@@ -1024,33 +982,30 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     if _prop_id:
                         proposal_count += 1
                     update_trade_bead_id(trade_record["id"], _prop_id, signal_bead_id)
-            except Exception:
-                pass
+            except Exception as e:
+                _record_error(bead_chain, "paper_trade", e, {"token_mint": mint, "recommendation": "WATCHLIST"}, cycle_start)
             result["decisions"].append(
-                f"🐗 WATCHLIST+PAPER: {token_symbol} ({mint[:8]}) — [{score.play_type}] "
+                f"\U0001f417 WATCHLIST+PAPER: {token_symbol} ({mint[:8]}) \u2014 [{score.play_type}] "
                 f"permission {score.permission_score}, ordering {score.ordering_score}, "
                 f"primary {len(score.primary_sources)}"
             )
         elif score.recommendation == "AUTO_EXECUTE":
-            # Track graduation plays for daily sublimit
             if score.play_type == "graduation":
                 daily_graduation_count += 1
 
             if dry_run:
                 result["decisions"].append(
-                    f"🐗🔥 DRY-RUN TRADE: {mint[:8]} — [{score.play_type}] would YOLO {score.position_size_sol:.4f} SOL "
+                    f"\U0001f417\U0001f525 DRY-RUN TRADE: {mint[:8]} \u2014 [{score.play_type}] would YOLO {score.position_size_sol:.4f} SOL "
                     f"(permission {score.permission_score}, ordering {score.ordering_score}, "
                     f"primary {len(score.primary_sources)}) OINK!"
                 )
             else:
                 result["decisions"].append(
-                    f"🐗🔥 EXECUTE: {mint[:8]} — [{score.play_type}] {score.position_size_sol:.4f} SOL "
+                    f"\U0001f417\U0001f525 EXECUTE: {mint[:8]} \u2014 [{score.play_type}] {score.position_size_sol:.4f} SOL "
                     f"(permission {score.permission_score}, ordering {score.ordering_score}) OINK!"
                 )
-                # --- LIVE TRADE EXECUTION ---
                 try:
                     wallet_pubkey = get_wallet_pubkey()
-
                     slippage_bps = 500 if score.play_type == "graduation" else 300
 
                     buy_result = await execute_swap(
@@ -1065,11 +1020,8 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                     buy_status = buy_result.get("status")
                     if buy_status != "SUCCESS":
                         error_msg = buy_result.get("error", "unknown")
-                        result["errors"].append(
-                            f"Trade FAILED for {mint[:8]}: {error_msg}"
-                        )
+                        result["errors"].append(f"Trade FAILED for {mint[:8]}: {error_msg}")
                     else:
-                        # Calculate entry price from swap result
                         amount_out = float(buy_result.get("amount_out", 0))
                         entry_price = 0.0
                         if amount_out > 0:
@@ -1077,6 +1029,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                             if amount_in_sol > 0:
                                 entry_price = (amount_in_sol * sol_price_usd) / amount_out
 
+                        tx_sig = buy_result.get("tx_signature", "")
                         now = datetime.utcnow().isoformat()
                         new_position = {
                             "token_mint": mint,
@@ -1088,6 +1041,7 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                             "entry_time": now,
                             "peak_price": entry_price,
                             "play_type": score.play_type,
+                            "tx_signature": tx_sig,
                             "thesis": (
                                 f"{score.play_type}: perm {score.permission_score}, "
                                 f"ord {score.ordering_score}, "
@@ -1110,10 +1064,11 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                         safe_write_json(state_path, state)
 
                         result["decisions"].append(
-                            f"  -> BUY OK: {amount_out:.2f} tokens, entry ${entry_price:.6f}"
+                            f"  -> BUY OK: {amount_out:.2f} tokens, entry ${entry_price:.6f}, tx={tx_sig[:16]}..." if tx_sig else
+                            f"  -> BUY OK: {amount_out:.2f} tokens, entry ${entry_price:.6f}, tx=NONE"
                         )
 
-                        # Emit PROPOSAL bead (v0.2) for live trade
+                        # Emit PROPOSAL bead for live trade
                         if bead_chain and signal_bead_id:
                             emit_proposal_bead(
                                 bead_chain, signal_bead_id=signal_bead_id,
@@ -1121,17 +1076,46 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                                 token_symbol=token_symbol,
                                 position_size_sol=score.position_size_sol,
                                 execution_venue="jupiter_jito", gate="auto",
+                                tx_signature=tx_sig,
                             )
 
                 except Exception as e:
-                    result["errors"].append(
-                        f"Trade execution error for {mint[:8]}: {e}"
-                    )
-    
-    # Close red flag client after loop
+                    result["errors"].append(f"Trade execution error for {mint[:8]}: {e}")
+
     await birdeye_red_flags.close()
 
-    # Step 12b: Check PnL on open paper trades (every cycle)
+    # Record scoring stage health
+    _highest_score = max((o.get("permission_score", 0) for o in result["opportunities"]), default=0)
+    cycle_health["stages"]["scoring"] = {
+        "status": "ok",
+        "candidates_scored": funnel["reached_scorer"],
+        "above_threshold": funnel["scored_execute"] + funnel["scored_watchlist"] + funnel["scored_paper_trade"],
+        "highest_score": _highest_score,
+        "duration_ms": _scoring_elapsed(),
+    }
+    cycle_health["stages"]["warden"] = {
+        "status": "ok",
+        "checked": funnel["reached_scorer"],
+        "passed": funnel["reached_scorer"] - funnel["scored_veto"],
+        "vetoed": funnel["scored_veto"],
+    }
+    cycle_health["stages"]["execution"] = {
+        "status": "ok" if funnel["scored_execute"] > 0 else "skipped:no_qualifying",
+        "trades_attempted": funnel["scored_execute"],
+        "proposals_emitted": proposal_count,
+    }
+
+    return proposal_count
+
+
+async def stage_finalize(
+    state: dict, bead_chain, result: dict, funnel: dict,
+    cycle_start: datetime, cycle_num: int, dry_run: bool,
+    cycle_health: dict, start_time: float, state_path: Path,
+    proposal_count: int,
+) -> None:
+    """Paper PnL, state write, heartbeat bead, canary. Mutates result."""
+    # Paper PnL check
     try:
         pnl_result = await check_paper_trades(bead_chain=bead_chain)
         result["paper_pnl_checked"] = pnl_result.get("checked", 0)
@@ -1139,23 +1123,19 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         result["errors"].append(f"Paper PnL check failed: {e}")
         result["paper_pnl_checked"] = 0
 
-    # Step 13: Update state with file locking (R5 fix)
+    # State update
     if dry_run:
         state["dry_run_cycles_completed"] = cycle_num
     state["last_heartbeat_time"] = datetime.utcnow().isoformat()
 
-    # Reset daily graduation count if date changed, otherwise persist
     today = datetime.utcnow().strftime("%Y-%m-%d")
     if state.get("daily_date") != today:
         state["daily_graduation_count"] = 0
-    else:
-        state["daily_graduation_count"] = daily_graduation_count
 
     safe_write_json(state_path, state)
 
-    # Append heartbeat chain bead (Flight Recorder — legacy)
+    # Legacy flight recorder
     try:
-        import hashlib
         from lib.chain.bead_chain import append_bead as chain_append
         state_json = json.dumps(state, sort_keys=True)
         state_hash = hashlib.sha256(state_json.encode()).hexdigest()
@@ -1170,11 +1150,15 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
             "state_hash": state_hash,
             "funnel": funnel,
         })
-    except Exception:
-        pass  # Chain is best-effort
+    except Exception as e:
+        _record_error(bead_chain, "bead_write", e, {"bead_type": "legacy_flight_recorder"}, cycle_start)
 
     # Structured heartbeat bead (v0.2)
     cycle_end = datetime.now(timezone.utc)
+    cycle_health["cycle_end"] = cycle_end.isoformat()
+    cycle_health["total_duration_ms"] = int((time.time() - start_time) * 1000)
+    cycle_health["errors"] = result.get("errors", [])
+
     if bead_chain:
         try:
             _source_health = {}
@@ -1199,26 +1183,26 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
                 canary_hash=hashlib.sha256(
                     json.dumps(state, sort_keys=True).encode()
                 ).hexdigest()[:12],
+                stage_results=cycle_health["stages"],
                 cycle_start=cycle_start,
                 cycle_end=cycle_end,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            _record_error(bead_chain, "bead_write", e, {"bead_type": "HEARTBEAT"}, cycle_start)
 
-    # Merkle anchor check at cycle end
+    # Merkle anchor
     if bead_chain:
         try:
             trigger = bead_chain.check_anchor_trigger()
             if trigger:
                 bead_chain.create_merkle_batch(trigger)
-        except Exception:
-            pass
+        except Exception as e:
+            _record_error(bead_chain, "bead_write", e, {"detail": "Merkle anchor check failed"}, cycle_start)
 
     result["state_updated"] = True
     result["next_cycle"] = cycle_num + 1
 
-    # Execution canary — proof that heartbeat_runner.py actually ran.
-    # Watchdog checks this file's mtime to detect hallucinated heartbeats.
+    # Execution canary
     canary_path = Path("state/last_real_hb.txt")
     try:
         import hashlib as _hl
@@ -1226,30 +1210,142 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         canary_path.write_text(
             f"{datetime.utcnow().isoformat()}|cycle={cycle_num + 1}|hash={_canary_hash}\n"
         )
-    except Exception:
-        pass  # Best-effort canary
+    except Exception as e:
+        _record_error(bead_chain, "state_update", e, {"detail": "Canary write failed"}, cycle_start)
 
     try:
         result["paper_open"] = len([t for t in _load_paper_trades() if not t.get("closed")])
-    except Exception:
+    except Exception as e:
+        _record_error(bead_chain, "paper_trade", e, {"detail": "Failed to count open paper trades"}, cycle_start)
         result["paper_open"] = 0
     result["health_line"] = build_health_line(result)
+
+
+# ── Main Orchestrator ────────────────────────────────────────────────
+
+
+async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
+    """Execute full heartbeat cycle with time budget.
+
+    Orchestrates discrete stages: init -> watchdog -> oracle -> narrative ->
+    score_and_execute -> finalize. Each stage records health in cycle_health.
+    """
+    start_time = time.time()
+
+    def time_remaining() -> float:
+        return timeout_seconds - (time.time() - start_time)
+
+    # Load state
+    state_path = Path("state/state.json")
+    state = safe_read_json(state_path)
+    dry_run = state.get("dry_run_mode", True)
+    cycle_num = state.get("dry_run_cycles_completed", 0) + 1
+
+    # Init bead chain
+    bead_chain = None
+    if _BEADS_AVAILABLE:
+        try:
+            bead_chain = BeadChain()
+        except Exception as e:
+            _record_error(None, "bead_init", e, {"detail": "BeadChain() constructor failed"})
+
+    cycle_start = datetime.now(timezone.utc)
+    cycle_health: dict[str, Any] = {
+        "cycle_number": cycle_num,
+        "cycle_start": cycle_start.isoformat(),
+        "stages": {},
+        "errors": [],
+    }
+
+    funnel = {
+        "nansen_raw": 0, "nansen_filtered": 0,
+        "mobula_raw": 0, "mobula_resolved": 0,
+        "pulse_raw": 0, "pulse_filtered": 0,
+        "narrative_raw": 0, "narrative_with_spike": 0,
+        "reached_scorer": 0, "scored_discard": 0,
+        "scored_paper_trade": 0, "scored_watchlist": 0,
+        "scored_execute": 0, "scored_veto": 0,
+    }
+
+    result: dict[str, Any] = {
+        "cycle": cycle_num, "timestamp": datetime.utcnow().isoformat(),
+        "dry_run": dry_run, "opportunities": [], "decisions": [],
+        "errors": [], "exits": [], "timeout_triggered": False,
+        "observe_only": False, "data_completeness": 1.0,
+        "sources_failed": [], "funnel": funnel,
+        "_fact_bead_ids": [],
+    }
+
+    if time_remaining() < 10:
+        result["timeout_triggered"] = True
+        result["observe_only"] = True
+        result["errors"].append(f"Time budget exhausted before start: {time_remaining():.1f}s remaining")
+        return result
+
+    # Stage 0: Context beads + watchdog alerts
+    stage_init_context(bead_chain, cycle_start, cycle_num)
+
+    # Stage 1: Chain verification
+    try:
+        from lib.chain.verify import verify_on_boot, send_tamper_alert
+        chain_status = verify_on_boot()
+        result["chain_status"] = chain_status["status"]
+        if chain_status["status"] == "TAMPERED":
+            await send_tamper_alert(chain_status["details"])
+            result["errors"].append(f"CHAIN TAMPERED: {chain_status['details']}")
+    except Exception as e:
+        result["errors"].append(f"Chain verification error: {e}")
+
+    # Stage 2: Position watchdog
+    if time_remaining() < 10:
+        result["timeout_triggered"] = True
+        result["observe_only"] = True
+        result["errors"].append("Timeout before watchdog step")
+        return result
+    await stage_watchdog(state, bead_chain, result, cycle_health, time_remaining)
+
+    # Stage 3: Oracle
+    if time_remaining() < 10:
+        result["timeout_triggered"] = True
+        result["observe_only"] = True
+        result["errors"].append("Timeout before oracle step")
+        return result
+    oracle_signals, oracle_failed = await stage_oracle(
+        bead_chain, result, funnel, cycle_start, cycle_health, time_remaining,
+    )
+
+    # Stage 4: Narrative
+    narrative_signals, narrative_failed, narrative_tracker = await stage_narrative(
+        bead_chain, result, funnel, cycle_start, cycle_health,
+    )
+
+    # Stage 5: Score, warden, execute
+    proposal_count = await stage_score_and_execute(
+        oracle_signals, narrative_signals, narrative_tracker,
+        oracle_failed, narrative_failed,
+        state, bead_chain, result, funnel,
+        cycle_start, cycle_health, state_path, dry_run,
+    )
+
+    # Early return if observe-only was triggered during scoring
+    if result.get("observe_only"):
+        return result
+
+    # Stage 6: Finalize
+    await stage_finalize(
+        state, bead_chain, result, funnel,
+        cycle_start, cycle_num, dry_run,
+        cycle_health, start_time, state_path, proposal_count,
+    )
 
     return result
 
 
+# ── Helper Functions ─────────────────────────────────────────────────
+
+
 def _get_mcap_exit_tier(entry_market_cap: float, play_type: str = "accumulation") -> dict:
-    """Get market-cap-aware exit parameters.
-
-    | MC Tier        | TP1 pnl% (sell%) | TP2 pnl% (sell%) | Trail% | Decay min | SL%  |
-    |----------------|-------------------|-------------------|--------|-----------|------|
-    | Micro  <100k   | 80  (40)          | 200 (40)          | 25     | 20        | -30  |
-    | Small  100-500k| 60  (50)          | 150 (30)          | 20     | 30        | -25  |
-    | Mid    500k-2M | 40  (50)          | 100 (30)          | 15     | 45        | -20  |
-    | Large  >2M     | 30  (50)          | 60  (30)          | 12     | 60        | -15  |
-
-    Graduation plays use tighter time decay (halved).
-    """
+    """Get market-cap-aware exit parameters."""
     if entry_market_cap < 100_000:
         tier = {"tp1_pnl": 80, "tp1_sell": 40, "tp2_pnl": 200, "tp2_sell": 40,
                 "trail_pct": 25, "decay_min": 20, "stop_loss": -30, "label": "micro"}
@@ -1263,7 +1359,6 @@ def _get_mcap_exit_tier(entry_market_cap: float, play_type: str = "accumulation"
         tier = {"tp1_pnl": 30, "tp1_sell": 50, "tp2_pnl": 60, "tp2_sell": 30,
                 "trail_pct": 12, "decay_min": 60, "stop_loss": -15, "label": "large"}
 
-    # Graduation plays are speed plays — tighter time decay
     if play_type == "graduation":
         tier["decay_min"] = max(10, tier["decay_min"] // 2)
 
@@ -1274,20 +1369,13 @@ async def run_position_watchdog(
     state: dict[str, Any],
     birdeye: BirdeyeClient,
 ) -> list[dict[str, Any]]:
-    """Monitor open positions and generate exit decisions.
-
-    Uses market-cap-aware exit tiers: smaller MC tokens get wider TP
-    targets (bigger moves are realistic) and tighter time decay.
-
-    Returns list of exit decisions with reason and percentage.
-    """
+    """Monitor open positions and generate exit decisions."""
     exit_decisions = []
     positions = state.get("positions", [])
 
     if not positions:
         return exit_decisions
 
-    # Batch fetch all position prices (R4 fix: parallel API calls)
     mints = [pos["token_mint"] for pos in positions]
     price_data = await batch_price_fetch(birdeye, mints, max_concurrent=3)
 
@@ -1298,96 +1386,68 @@ async def run_position_watchdog(
         peak_price = pos.get("peak_price", entry_price)
         entry_time = datetime.fromisoformat(pos["entry_time"])
 
-        # Get refreshed price from batch fetch
         overview = price_data.get(mint, {})
         data = overview.get("data", overview)
 
         if not data:
             exit_decisions.append({
-                "token_mint": mint,
-                "symbol": pos["token_symbol"],
-                "reason": "Price fetch failed",
-                "exit_pct": 100,
-                "urgency": "high",
+                "token_mint": mint, "symbol": pos["token_symbol"],
+                "reason": "Price fetch failed", "exit_pct": 100, "urgency": "high",
             })
             continue
 
         current_price = float(data.get("price", 0))
         liquidity = float(data.get("liquidity", 0))
 
-        # Update peak price if needed
         if current_price > peak_price:
             pos["peak_price"] = current_price
             peak_price = current_price
 
-        # Calculate PnL
         pnl_pct = ((current_price - entry_price) / entry_price) * 100
         peak_drawdown_pct = ((current_price - peak_price) / peak_price) * 100
-
-        # Position age
         age_minutes = (datetime.utcnow() - entry_time).total_seconds() / 60
 
-        # Market-cap-aware exit tiers
         entry_mc = float(pos.get("entry_market_cap_usd", 0))
         pos_play_type = pos.get("play_type", "accumulation")
         tier = _get_mcap_exit_tier(entry_mc, pos_play_type)
 
-        # Exit logic (mcap-aware)
-        # 1. Stop-loss
         if pnl_pct <= tier["stop_loss"]:
             exit_decisions.append({
-                "token_mint": mint,
-                "symbol": pos["token_symbol"],
+                "token_mint": mint, "symbol": pos["token_symbol"],
                 "reason": f"Stop-loss hit: {pnl_pct:.1f}% (tier={tier['label']}, sl={tier['stop_loss']}%)",
-                "exit_pct": 100,
-                "urgency": "critical",
+                "exit_pct": 100, "urgency": "critical",
             })
-        # 2. Take-profit tier 1
         elif pnl_pct >= tier["tp1_pnl"] and not pos.get("tier1_exited", False):
             exit_decisions.append({
-                "token_mint": mint,
-                "symbol": pos["token_symbol"],
+                "token_mint": mint, "symbol": pos["token_symbol"],
                 "reason": f"TP tier 1: {pnl_pct:.1f}% (tier={tier['label']}, target={tier['tp1_pnl']}%)",
-                "exit_pct": tier["tp1_sell"],
-                "urgency": "normal",
+                "exit_pct": tier["tp1_sell"], "urgency": "normal",
             })
             pos["tier1_exited"] = True
-        # 3. Take-profit tier 2
         elif pnl_pct >= tier["tp2_pnl"] and not pos.get("tier2_exited", False):
             exit_decisions.append({
-                "token_mint": mint,
-                "symbol": pos["token_symbol"],
+                "token_mint": mint, "symbol": pos["token_symbol"],
                 "reason": f"TP tier 2: {pnl_pct:.1f}% (tier={tier['label']}, target={tier['tp2_pnl']}%)",
-                "exit_pct": tier["tp2_sell"],
-                "urgency": "normal",
+                "exit_pct": tier["tp2_sell"], "urgency": "normal",
             })
             pos["tier2_exited"] = True
-        # 4. Trailing stop (mcap-aware trail % from peak while in profit)
         elif pnl_pct > 0 and peak_drawdown_pct <= -tier["trail_pct"]:
             exit_decisions.append({
-                "token_mint": mint,
-                "symbol": pos["token_symbol"],
+                "token_mint": mint, "symbol": pos["token_symbol"],
                 "reason": f"Trailing stop: {peak_drawdown_pct:.1f}% from peak (tier={tier['label']}, trail={tier['trail_pct']}%)",
-                "exit_pct": 100,
-                "urgency": "high",
+                "exit_pct": 100, "urgency": "high",
             })
-        # 5. Time decay (mcap-aware — no movement after N min)
         elif age_minutes >= tier["decay_min"] and abs(pnl_pct) < 5:
             exit_decisions.append({
-                "token_mint": mint,
-                "symbol": pos["token_symbol"],
+                "token_mint": mint, "symbol": pos["token_symbol"],
                 "reason": f"Time decay: {age_minutes:.0f}min, {pnl_pct:.1f}% PnL (tier={tier['label']}, limit={tier['decay_min']}min)",
-                "exit_pct": 100,
-                "urgency": "low",
+                "exit_pct": 100, "urgency": "low",
             })
-        # 6. Liquidity drop (>50% from entry)
         elif pos.get("entry_liquidity") and liquidity < pos["entry_liquidity"] * 0.5:
             exit_decisions.append({
-                "token_mint": mint,
-                "symbol": pos["token_symbol"],
+                "token_mint": mint, "symbol": pos["token_symbol"],
                 "reason": f"Liquidity drop: ${liquidity:,.0f} (was ${pos['entry_liquidity']:,.0f})",
-                "exit_pct": 100,
-                "urgency": "high",
+                "exit_pct": 100, "urgency": "high",
             })
 
     return exit_decisions
@@ -1403,7 +1463,6 @@ async def run_rug_warden(
         result = await check_token(mint, play_type=play_type, pre_liquidity_usd=pre_liquidity_usd)
         return result.get("verdict", "FAIL")
     except Exception as e:
-        # On error, return FAIL to be safe
         return "FAIL"
 
 
@@ -1412,11 +1471,7 @@ async def scan_token_narrative(
     birdeye: BirdeyeClient,
     tracker: NarrativeTracker,
 ) -> dict[str, Any] | None:
-    """Scan single token for narrative signals (on-chain volume only).
-
-    X API is disabled — KOL/social detection unavailable. Narrative
-    signal is purely volume-spike-based from Birdeye on-chain data.
-    """
+    """Scan single token for narrative signals (on-chain volume only)."""
     try:
         overview = await birdeye.get_token_overview(mint)
         data = overview.get("data", overview)
@@ -1427,7 +1482,6 @@ async def scan_token_narrative(
         avg_hourly = volume_24h / 24 if volume_24h > 0 else 0
         volume_ratio = round(volume_1h / avg_hourly, 1) if avg_hourly > 0 else 0
 
-        # Track if volume spike detected (lowered from 5x to 2x for gradient scoring)
         if volume_ratio >= 2.0:
             tracker.record_detection(mint)
 
@@ -1438,7 +1492,8 @@ async def scan_token_narrative(
             "kol_mentions": 0,
             "volume_vs_avg": f"{volume_ratio}x",
         }
-    except Exception:
+    except Exception as e:
+        _record_error(None, "narrative_hunter", e, {"token_mint": mint, "detail": "scan_token_narrative failed"})
         return None
 
 

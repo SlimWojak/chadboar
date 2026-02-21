@@ -165,12 +165,48 @@ fi
 CANARY_FILE="$WORKSPACE/state/last_real_hb.txt"
 CANARY_STALE_MINUTES=15
 
+CANARY_ALERT_FILE="$WORKSPACE/state/last_canary_alert.txt"
+CANARY_ALERT_COOLDOWN_MINUTES=30
+
 if [ "$gateway_alive" = true ] && [ -f "$CANARY_FILE" ]; then
     canary_age_sec=$(( $(date -u +%s) - $(stat -c%Y "$CANARY_FILE" 2>/dev/null || echo 0) ))
     canary_age_min=$(( canary_age_sec / 60 ))
     if [ "$canary_age_min" -ge "$CANARY_STALE_MINUTES" ]; then
         log "CANARY: last_real_hb.txt is ${canary_age_min}min old — heartbeat may be hallucinated"
-        tg_alert "$(printf '\xF0\x9F\x9A\xA8') CANARY: Heartbeat execution canary stale (${canary_age_min}min). Agent may be hallucinating heartbeats. Manual check needed."
+
+        # Rate limit: only alert if >COOLDOWN since last alert
+        should_alert=true
+        if [ -f "$CANARY_ALERT_FILE" ]; then
+            last_alert_age=$(( $(date -u +%s) - $(stat -c%Y "$CANARY_ALERT_FILE" 2>/dev/null || echo 0) ))
+            last_alert_min=$(( last_alert_age / 60 ))
+            if [ "$last_alert_min" -lt "$CANARY_ALERT_COOLDOWN_MINUTES" ]; then
+                should_alert=false
+                log "CANARY: Alert suppressed (last alert ${last_alert_min}min ago, cooldown ${CANARY_ALERT_COOLDOWN_MINUTES}min)"
+            fi
+        fi
+
+        if [ "$should_alert" = true ]; then
+            tg_alert "$(printf '\xF0\x9F\x94\xB4') WATCHDOG: Heartbeat canary stale for ${canary_age_min}min. Last real execution: $(cat "$CANARY_FILE" | head -1). Grok may be hallucinating. Manual check required."
+            touch "$CANARY_ALERT_FILE"
+            log "CANARY: Alert sent to Telegram"
+
+            # Write watchdog_alert.json for heartbeat to pick up and emit CLAIM bead
+            python3 -c "
+import json
+from datetime import datetime, timezone
+alert = {
+    'stale_since_minutes': $canary_age_min,
+    'detected_at': datetime.now(timezone.utc).isoformat(),
+    'alert_sent': True
+}
+with open('$WORKSPACE/state/watchdog_alert.json', 'w') as f:
+    json.dump(alert, f)
+" 2>/dev/null || true
+        fi
+    else
+        # Canary is fresh — clear any pending alert file
+        rm -f "$CANARY_ALERT_FILE" 2>/dev/null || true
+        rm -f "$WORKSPACE/state/watchdog_alert.json" 2>/dev/null || true
     fi
 elif [ "$gateway_alive" = true ] && [ ! -f "$CANARY_FILE" ]; then
     log "CANARY: last_real_hb.txt missing — first run or canary not yet deployed"

@@ -13,6 +13,8 @@ correct pipeline stages per BEAD_FIELD_SPEC v0.2.
 from __future__ import annotations
 
 import logging
+import sys
+import traceback
 from datetime import datetime, timezone
 from typing import Any
 
@@ -41,6 +43,74 @@ AGENT_SOURCE = SourceRef(
     source_type=SourceType.AGENT,
     source_id="chadboar-v0.2",
 )
+
+
+def emit_pipeline_error(
+    chain: BeadChain | None,
+    *,
+    stage: str,
+    error: Exception,
+    context: dict | None = None,
+    cycle_start: datetime | None = None,
+    cycle_end: datetime | None = None,
+) -> str | None:
+    """Emit a CLAIM bead with domain='pipeline_error' capturing a failure.
+
+    This itself is wrapped in try/except — if even error recording fails,
+    log to stderr as absolute last resort. Never raises.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        _cs = cycle_start or now
+        _ce = cycle_end or now
+
+        # Sanitize context — remove anything that could contain secrets
+        safe_context = {}
+        if context:
+            for k, v in context.items():
+                key_lower = k.lower()
+                if any(s in key_lower for s in ("key", "secret", "token", "password", "credential")):
+                    safe_context[k] = "<REDACTED>"
+                else:
+                    try:
+                        safe_context[k] = str(v)[:500]
+                    except Exception:
+                        safe_context[k] = "<unserializable>"
+
+        content = ClaimContent(
+            conclusion=f"Pipeline error in {stage}: {type(error).__name__}",
+            reasoning_trace=traceback.format_exc()[-2000:],
+            premises_ref=[],
+            confidence_basis="error_capture",
+            domain="pipeline_error",
+            tokens_referenced=[],
+        )
+
+        bead = BeadBase.create(
+            bead_type=BeadType.CLAIM,
+            temporal_class=TemporalClass.OBSERVATION,
+            source_ref=AGENT_SOURCE,
+            content_model=content,
+            world_time_valid_from=_cs,
+            world_time_valid_to=_ce,
+            tags=[f"domain:pipeline_error", f"stage:{stage}"],
+        )
+
+        # Store the extra error context in the bead content dict directly
+        bead.content["error_type"] = type(error).__name__
+        bead.content["error_message"] = str(error)[:1000]
+        bead.content["stage"] = stage
+        bead.content["context"] = safe_context
+
+        return _safe_write(chain, bead)
+    except Exception as fallback_err:
+        # Absolute last resort — stderr
+        print(
+            f"[PIPELINE_ERROR] stage={stage} error={error} "
+            f"(bead emission also failed: {fallback_err})",
+            file=sys.stderr,
+        )
+        return None
 
 
 def _safe_write(chain: BeadChain | None, bead: BeadBase) -> str:
@@ -201,6 +271,7 @@ def emit_proposal_bead(
     gate: str = "auto",
     stop_loss: dict | None = None,
     constraints: list[str] | None = None,
+    tx_signature: str | None = None,
 ) -> str:
     """Emit a PROPOSAL bead — trade intent (paper or live).
 
@@ -221,6 +292,7 @@ def emit_proposal_bead(
             gate=gate,
             stop_loss=stop_loss,
             constraints=constraints or [],
+            tx_signature=tx_signature,
         ),
         lineage=[signal_bead_id] if signal_bead_id else [],
         tags=[f"token:{token_symbol}", f"venue:{execution_venue}"],
@@ -288,6 +360,7 @@ def emit_heartbeat_bead(
     pipeline_health: dict | None = None,
     canary_hash: str = "",
     previous_heartbeat_id: str | None = None,
+    stage_results: dict | None = None,
     cycle_start: datetime,
     cycle_end: datetime,
 ) -> str:
@@ -308,6 +381,7 @@ def emit_heartbeat_bead(
             pipeline_health=pipeline_health or {},
             canary_hash=canary_hash,
             previous_heartbeat_id=previous_heartbeat_id,
+            stage_results=stage_results or {},
         ),
         lineage=lineage,
         world_time_valid_from=cycle_start,

@@ -146,6 +146,7 @@ class ProposalContent(BaseModel):
     constraints: list[str] = []
     execution_venue: str = "solana_mainnet"
     gate: str
+    tx_signature: str | None = None
 
 
 class ProposalRejectedContent(BaseModel):
@@ -227,6 +228,7 @@ class HeartbeatContent(BaseModel):
     pipeline_health: dict = {}
     canary_hash: str = ""
     previous_heartbeat_id: str | None = None
+    stage_results: dict = {}  # Per-stage status/timing from cycle_health
 
 
 # ── Content type mapping ─────────────────────────────────────────────
