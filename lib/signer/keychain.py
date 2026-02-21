@@ -237,6 +237,7 @@ def verify_isolation() -> dict[str, Any]:
         "__CF", "__CFB", "SECURITYSESSIONID", "LaunchInstanceID",
         "ORIGINAL_XDG", "OPENCLAW_", "MEMORY_",
         "BRAVE_", "PERPLEXITY_", "REPLICATE_", "ELEVENLABS_",
+        "SOLANA_", "ANTHROPIC_", "LS_COLORS",
     )
     for key, value in os.environ.items():
         if len(value) >= 64 and not any(key.startswith(p) for p in safe_prefixes):

@@ -1,4 +1,4 @@
-# ChadBoar Status — 2026-02-20
+# ChadBoar Status — 2026-02-21
 
 **Current Balance:** 14.0 SOL ($1188.74 USD)
 **SOL Price:** $84.91
@@ -7,11 +7,11 @@
 **Mode:** LIVE (dry-run=false)
 
 **Guards:** All CLEAR | Chain UNANCHORED
-**Oracle:** 22 signals | Nan:28/100 ↑ | Pls:10/10 | Whl:7/14 ↑
-**Narrative:** Birdeye ERR x44
-**Candidates:** 34 scorer ↓ (8 exec, 2 WL, 2 paper, 12 discard ↓, 10 VETO)
+**Oracle:** 20 signals | Nan:23/100 ↓ | Pls:10/10 | Whl:8/15 ↑
+**Narrative:** Birdeye ERR x44 | Nar:0/DexS
+**Candidates:** 35 scorer | (8 exec, 1 WL, 2 paper, 17 discard, 7 VETO)
 **Decisions:** None
 **Actions:** No trades
-**Last Heartbeat:** 2026-02-20T13:21Z
-**Funnel:** scorer:34 ↓ | discard:12 ↓ | paper:2 | WL:2 | exec:8 | veto:10
-**Paper Open:** 88 ↑
+**Last Heartbeat:** 2026-02-21T01:31Z
+**Funnel:** scorer:35 | discard:17 | paper:2 | WL:1 | exec:8 | veto:7
+**Paper Open:** 77 ↓
