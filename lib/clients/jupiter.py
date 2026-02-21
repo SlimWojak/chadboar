@@ -20,7 +20,7 @@ class JupiterClient:
 
     def __init__(self):
         self._client = BaseClient(
-            base_url="https://quote-api.jup.ag/v6",
+            base_url="https://lite-api.jup.ag/swap/v1",
             rate_limit=10.0,
             timeout=10.0,
             provider_name="jupiter",

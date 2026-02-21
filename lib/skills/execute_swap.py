@@ -17,6 +17,10 @@ import json
 import sys
 from typing import Any
 
+import os
+
+import httpx
+
 from lib.clients.jupiter import JupiterClient, SOL_MINT
 from lib.clients.jito import JitoClient
 from lib.signer.keychain import sign_transaction, verify_isolation, SignerError
@@ -110,9 +114,42 @@ async def execute_swap(
                 "error": f"Signer error: {e}",
             }
 
-        # Step 4: Submit via Jito bundle (MEV-protected)
-        bundle_result = await jito.send_bundle([signed_tx_b64])
-        bundle_id = bundle_result.get("result", "")
+        # Step 4: Submit via Jito bundle (MEV-protected), fallback to RPC
+        tx_id = ""
+        submit_via = ""
+        try:
+            bundle_result = await jito.send_bundle([signed_tx_b64])
+            tx_id = bundle_result.get("result", "")
+            submit_via = "jito"
+        except Exception:
+            # Jito failed (no tip, rate limit, etc.) — send via Helius RPC
+            helius_key = os.environ.get("HELIUS_API_KEY", "")
+            rpc_url = (
+                f"https://mainnet.helius-rpc.com/?api-key={helius_key}"
+                if helius_key
+                else "https://api.mainnet-beta.solana.com"
+            )
+            async with httpx.AsyncClient(timeout=15) as rpc:
+                rpc_resp = await rpc.post(rpc_url, json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "sendTransaction",
+                    "params": [
+                        signed_tx_b64,
+                        {"encoding": "base64", "skipPreflight": False,
+                         "preflightCommitment": "confirmed"},
+                    ],
+                })
+                rpc_data = rpc_resp.json()
+                if "error" in rpc_data:
+                    return {
+                        "status": "FAILED",
+                        "direction": direction,
+                        "token_mint": token_mint,
+                        "error": f"RPC send failed: {rpc_data['error']}",
+                    }
+                tx_id = rpc_data.get("result", "")
+                submit_via = "helius_rpc"
 
         return {
             "status": "SUCCESS",
@@ -123,8 +160,9 @@ async def execute_swap(
             "price_impact_pct": float(quote.get("priceImpactPct", 0)),
             "slippage_bps": slippage_bps,
             "route_plan": _summarize_route(quote),
-            "bundle_id": bundle_id,
-            "message": f"Trade executed. Bundle: {bundle_id}",
+            "tx_signature": tx_id,
+            "submit_via": submit_via,
+            "message": f"Trade executed via {submit_via}. Tx: {tx_id}",
         }
 
     except Exception as e:

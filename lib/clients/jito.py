@@ -38,7 +38,7 @@ class JitoClient:
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "sendBundle",
-                "params": [signed_transactions],
+                "params": [signed_transactions, {"encoding": "base64"}],
             },
         )
 
