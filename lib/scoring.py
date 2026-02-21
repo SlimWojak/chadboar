@@ -391,6 +391,21 @@ class ConvictionScorer:
                 play_type=play_type,
             )
 
+        # VETO 7: Graduation mcap too high — not a micro-cap speed play
+        grad_max_mcap = self.graduation_config.get('max_mcap_graduation', 500_000)
+        if play_type == "graduation" and signals.entry_market_cap_usd > grad_max_mcap:
+            return ConvictionScore(
+                ordering_score=0,
+                permission_score=0,
+                breakdown={},
+                red_flags={},
+                primary_sources=[],
+                recommendation="VETO",
+                position_size_sol=0.0,
+                reasoning=f"VETO: Graduation mcap ${signals.entry_market_cap_usd:,.0f} > ${grad_max_mcap:,.0f} cap",
+                play_type=play_type,
+            )
+
         # Get weight profile for play type
         weights = self._get_weights(play_type)
 

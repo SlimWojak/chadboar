@@ -1163,6 +1163,13 @@ async def stage_score_and_execute(
                 f"primary {len(score.primary_sources)}"
             )
         elif score.recommendation == "AUTO_EXECUTE":
+            # Check per-mint position limit (max 2 entries per token)
+            state_fresh = safe_read_json(state_path)
+            mint_count = sum(1 for p in state_fresh.get("positions", []) if p["token_mint"] == mint)
+            if mint_count >= 2:
+                result["decisions"].append(f"\U0001f417 SKIP: {mint[:8]} — already {mint_count} entries (max 2)")
+                continue
+
             if score.play_type == "graduation":
                 daily_graduation_count += 1
 
@@ -1623,7 +1630,7 @@ def _get_mcap_exit_tier(entry_market_cap: float, play_type: str = "accumulation"
                 "trail_pct": 12, "decay_min": 60, "stop_loss": -15, "label": "large"}
 
     if play_type == "graduation":
-        tier["decay_min"] = max(10, tier["decay_min"] // 2)
+        tier["decay_min"] = max(15, tier["decay_min"] // 2)
 
     return tier
 

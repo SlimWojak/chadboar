@@ -92,7 +92,7 @@ Paper trade PnL checks + 6h expiry, heartbeat bead, Merkle anchor (every 50 bead
 ### Play Types
 | Type | Detection | Auto-Execute | Max Position | Daily Limit |
 |------|-----------|-------------|--------------|-------------|
-| graduation | Pulse signals + no whales | >= 50 | $30 | 8/day |
+| graduation | Pulse signals + no whales | >= 60 | $30 | 8/day |
 | accumulation | Whale signals or mixed | >= 75 | 5% of pot | none |
 
 ### Weight Profiles
@@ -105,6 +105,7 @@ Paper trade PnL checks + 6h expiry, heartbeat bead, Merkle anchor (every 50 bead
 3. **Serial deployer**: `pulse_deployer_migrations > 5` (data: -26% avg PnL)
 4. Graduation daily sublimit exceeded (`daily_graduation_count >= max_daily_plays`)
 5. All whales are dumpers
+6. **Graduation mcap too high**: `entry_market_cap_usd > max_mcap_graduation` ($500k default — not a micro-cap speed play)
 
 ### Red Flag Penalties (permission_score deductions)
 - Concentrated volume: -15
@@ -133,7 +134,7 @@ Primary = oracle (whales>=1), narrative (vol>=3x), warden (PASS), pulse (pro>10%
 | < $2M | +40% | 50% | +100% | 30% | 15% | 45min | -20% |
 | >= $2M | +30% | 50% | +60% | 30% | 12% | 60min | -15% |
 
-Graduation: `decay_min = max(10, tier_decay_min // 2)`.
+Graduation: `decay_min = max(15, tier_decay_min // 2)`.
 
 Time decay fires when: `age >= decay_min AND abs(pnl_pct) < 5%`.
 
@@ -471,5 +472,8 @@ systemctl --user status openclaw-gateway.service --no-pager
 13. **ESCALATING SLIPPAGE ON SL**: `stage_execute_exits` MUST use escalating slippage (500→1500→4900 bps) for critical/high urgency exits. Micro-cap tokens that trigger SL have thin liquidity — fixed 5% slippage causes infinite retry loops where Custom 6024 fails every heartbeat while the position bleeds to zero.
 14. **EXIT WIN/LOSS TRACKING**: `stage_execute_exits` MUST update `total_wins`, `total_losses`, `consecutive_losses`, and `daily_loss_pct` after each exit. Without this, the circuit breaker (3 consecutive losses = 50% size reduction) is blind to watchdog exits.
 15. **SINGLE POSITION REMOVAL ON EXIT**: Full exits MUST remove only the FIRST matching position entry for a mint, NOT all entries. Multiple buys of the same token create separate position entries (e.g. XMN x3). Removing all entries on a single exit deletes unrelated positions and orphans on-chain tokens.
-16. **TOKEN-2022 FOR ON-CHAIN CHECKS**: PumpFun tokens use Token-2022 program (`TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`), NOT standard SPL Token (`TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`). Diagnostic commands checking `getTokenAccountsByOwner` MUST query Token-2022 or they will show 0 accounts.
-17. **LATEST.MD IS AUTO-GENERATED**: `state/latest.md` is written deterministically by `stage_finalize()` in heartbeat_runner.py from state.json data. Grok MUST NOT overwrite it. Previously Grok wrote latest.md itself and hallucinated balances (8.5 vs 12.6 SOL actual) and position counts (11 vs 14 actual). The cron job and HEARTBEAT.md instruct Grok to READ latest.md for its report but never write it.
+16. **PER-MINT POSITION LIMIT**: `stage_score_and_execute` MUST skip AUTO_EXECUTE if the mint already has >= 2 entries in `state.positions`. Prevents duplicate-mint stacking (e.g. XMN x4, Crabal x3) which concentrates risk and wastes tx fees on marginal re-entries.
+17. **BIRDEYE TRADE LIMIT**: `get_trades()` MUST cap `limit` at 50 (`min(limit, 50)`). Birdeye API returns 400 for limit > 50. Without the cap, every volume concentration check fails, degrading warden validation.
+18. **GRADUATION MCAP CAP**: Graduation plays above `max_mcap_graduation` ($500k default) are VETO'd. Tokens above $500k should be accumulation plays, not graduation speed plays.
+19. **TOKEN-2022 FOR ON-CHAIN CHECKS**: PumpFun tokens use Token-2022 program (`TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`), NOT standard SPL Token (`TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`). Diagnostic commands checking `getTokenAccountsByOwner` MUST query Token-2022 or they will show 0 accounts.
+20. **LATEST.MD IS AUTO-GENERATED**: `state/latest.md` is written deterministically by `stage_finalize()` in heartbeat_runner.py from state.json data. Grok MUST NOT overwrite it. Previously Grok wrote latest.md itself and hallucinated balances (8.5 vs 12.6 SOL actual) and position counts (11 vs 14 actual). The cron job and HEARTBEAT.md instruct Grok to READ latest.md for its report but never write it.

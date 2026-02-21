@@ -109,7 +109,7 @@ class BirdeyeClient:
         """Get recent trades for volume concentration analysis."""
         return await self._client.get(
             "/defi/txs/token",
-            params={"address": mint, "tx_type": "swap", "limit": limit, "offset": offset},
+            params={"address": mint, "tx_type": "swap", "limit": int(min(limit, 50)), "offset": offset},
             cache_ttl=30,
         )
 
