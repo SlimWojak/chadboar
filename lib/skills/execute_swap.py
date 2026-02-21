@@ -117,12 +117,14 @@ async def execute_swap(
         # Step 4: Submit via Jito bundle (MEV-protected), fallback to RPC
         tx_id = ""
         submit_via = ""
+        jito_error_msg = ""
         try:
             bundle_result = await jito.send_bundle([signed_tx_b64])
             tx_id = bundle_result.get("result", "")
             submit_via = "jito"
-        except Exception:
-            # Jito failed (no tip, rate limit, etc.) — send via Helius RPC
+        except Exception as jito_err:
+            # Jito failed — send via Helius RPC. Log reason for diagnostics.
+            jito_error_msg = str(jito_err)[:200]
             helius_key = os.environ.get("HELIUS_API_KEY", "")
             rpc_url = (
                 f"https://mainnet.helius-rpc.com/?api-key={helius_key}"
@@ -207,6 +209,7 @@ async def execute_swap(
             "route_plan": _summarize_route(quote),
             "tx_signature": tx_id,
             "submit_via": submit_via,
+            "jito_error": jito_error_msg if submit_via != "jito" else "",
             "confirmed": True,
             "message": f"Trade confirmed on-chain via {submit_via}. Tx: {tx_id}",
         }

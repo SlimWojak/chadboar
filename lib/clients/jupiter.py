@@ -55,11 +55,12 @@ class JupiterClient:
         self,
         quote_response: dict[str, Any],
         user_public_key: str,
-        priority_fee_lamports: int = 5000,
+        priority_fee_lamports: int = 100_000,
     ) -> dict[str, Any]:
         """Get serialized swap transaction from a quote.
 
         Returns the unsigned transaction to pass to the signer.
+        priority_fee_lamports: micro-lamports per CU. At 200k CU, 100k = ~0.02 SOL.
         """
         return await self._client.post(
             "/swap",
