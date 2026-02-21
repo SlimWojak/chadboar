@@ -104,15 +104,53 @@ async def check_paper_trades(bead_chain: Any = None) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     now_epoch = int(now.timestamp())
 
-    # Batch-close stale trades (>6h) without API calls
-    closed_trades = []
+    # Identify expiring trades (>6h) — fetch final price BEFORE closing
+    expiring_trades = []
     for trade in open_trades:
         age_minutes = (now_epoch - trade["entry_epoch"]) / 60
         if age_minutes >= 360:
-            trade["closed"] = True
-            trade["close_reason"] = "6h_expiry"
-            expired += 1
-            closed_trades.append(trade)
+            expiring_trades.append(trade)
+
+    # Fetch final FDV for expiring trades (cap at 15 API calls per cycle)
+    for trade in expiring_trades[:15]:
+        try:
+            overview = await birdeye.get_token_overview(trade["token_mint"])
+            data = overview.get("data", overview)
+            current_fdv = float(data.get("fdv", data.get("mc", 0)))
+            current_price = float(data.get("price", 0))
+            current_liq = float(data.get("liquidity", 0))
+
+            entry_fdv = trade["entry_price_fdv"]
+            # If entry_fdv was 0, use first PnL check's FDV as retroactive entry
+            if entry_fdv == 0:
+                checks = trade.get("pnl_checks", [])
+                if checks:
+                    entry_fdv = checks[0].get("current_fdv", 0)
+                    if entry_fdv > 0:
+                        trade["entry_price_fdv"] = entry_fdv
+
+            pnl_pct = ((current_fdv - entry_fdv) / entry_fdv * 100) if entry_fdv > 0 else 0
+
+            age_minutes = (now_epoch - trade["entry_epoch"]) / 60
+            snapshot = {
+                "time": now.isoformat(),
+                "age_minutes": round(age_minutes, 1),
+                "current_fdv": current_fdv,
+                "current_price": current_price,
+                "current_liq": current_liq,
+                "pnl_pct": round(pnl_pct, 2),
+            }
+            trade.setdefault("pnl_checks", []).append(snapshot)
+        except Exception:
+            pass  # Token may have been rugged/delisted
+
+    # Now close the expiring trades
+    closed_trades = []
+    for trade in expiring_trades:
+        trade["closed"] = True
+        trade["close_reason"] = "6h_expiry"
+        expired += 1
+        closed_trades.append(trade)
 
     # Check PnL on the 10 most recent still-open trades (cap API calls)
     still_open = [t for t in open_trades if not t.get("closed")]
@@ -130,6 +168,14 @@ async def check_paper_trades(bead_chain: Any = None) -> dict[str, Any]:
                 current_liq = float(data.get("liquidity", 0))
 
                 entry_fdv = trade["entry_price_fdv"]
+                # Retroactive entry fix: if entry was 0, use first check as baseline
+                if entry_fdv == 0:
+                    checks = trade.get("pnl_checks", [])
+                    if checks:
+                        entry_fdv = checks[0].get("current_fdv", 0)
+                        if entry_fdv > 0:
+                            trade["entry_price_fdv"] = entry_fdv
+
                 pnl_pct = ((current_fdv - entry_fdv) / entry_fdv * 100) if entry_fdv > 0 else 0
 
                 snapshot = {

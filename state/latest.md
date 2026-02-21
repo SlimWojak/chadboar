@@ -7,11 +7,11 @@
 **Mode:** LIVE (dry-run=false)
 
 **Guards:** All CLEAR | Chain UNANCHORED
-**Oracle:** 20 signals | Nan:23/100 ↓ | Pls:10/10 | Whl:8/15 ↑
+**Oracle:** 18 signals | Nan:9/100 ↓ | Pls:10/10 | Whl:8/16 ↑
 **Narrative:** Birdeye ERR x44 | Nar:0/DexS
-**Candidates:** 35 scorer | (8 exec, 1 WL, 2 paper, 17 discard, 7 VETO)
+**Candidates:** 35 scorer | (7 exec, 2 WL, 1 paper, 16 discard, 9 VETO)
 **Decisions:** None
 **Actions:** No trades
-**Last Heartbeat:** 2026-02-21T01:31Z
-**Funnel:** scorer:35 | discard:17 | paper:2 | WL:1 | exec:8 | veto:7
-**Paper Open:** 77 ↓
+**Last Heartbeat:** 2026-02-21T01:51Z
+**Funnel:** scorer:35 | discard:16 | paper:1 | WL:2 | exec:7 | veto:9
+**Paper Open:** 76 ↓

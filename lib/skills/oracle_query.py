@@ -960,6 +960,7 @@ async def _aggregate_dex_trades(client: NansenClient) -> list[dict[str, Any]]:
             "total_buy_usd": round(info["total_inflow_usd"], 2),
             "confidence": confidence,
             "source": "nansen",
+            "market_cap_usd": round(info.get("market_cap", 0), 2),
         })
 
     # Sort by smart_money_wallets DESC, then total_inflow_usd DESC

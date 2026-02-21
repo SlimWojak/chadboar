@@ -190,13 +190,39 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
     claim_bead_ids: list[str] = []
     proposal_count = 0
 
-    # POLICY + MODEL_VERSION beads on first cycle or config change
-    if bead_chain and cycle_num <= 1:
+    # POLICY + MODEL_VERSION beads — emit on first bead-system boot or config change.
+    # Uses a separate flag in beads.db (not cycle_num, which is dry-run era counter).
+    _should_emit_context = False
+    if bead_chain:
+        try:
+            existing_policy = bead_chain.query_by_type(BeadType.POLICY, limit=1)
+            existing_model = bead_chain.query_by_type(BeadType.MODEL_VERSION, limit=1)
+            if not existing_policy or not existing_model:
+                _should_emit_context = True
+            else:
+                # Re-emit if risk.yaml has changed since last POLICY bead
+                import hashlib as _hl
+                risk_path = Path("config/risk.yaml")
+                if risk_path.exists():
+                    current_hash = _hl.sha256(risk_path.read_bytes()).hexdigest()[:16]
+                    last_policy = existing_policy[0]
+                    last_hash = last_policy.content.get("rules", {}).get("_config_hash", "")
+                    if current_hash != last_hash:
+                        _should_emit_context = True
+        except Exception:
+            _should_emit_context = True  # On error, emit to be safe
+
+    if bead_chain and _should_emit_context:
         try:
             import yaml
             risk_path = Path("config/risk.yaml")
             if risk_path.exists():
                 risk_rules = yaml.safe_load(risk_path.read_text()) or {}
+                # Stamp config hash for change detection
+                import hashlib as _hl
+                risk_rules["_config_hash"] = _hl.sha256(
+                    risk_path.read_bytes()
+                ).hexdigest()[:16]
                 emit_policy_bead(
                     bead_chain,
                     policy_name="risk_config",
@@ -539,6 +565,39 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         # All sources available
         result["data_completeness"] = 1.0
     
+    # CLAIM bead: Pipeline regime assessment (emitted every cycle)
+    if bead_chain and fact_bead_ids:
+        try:
+            _total_candidates = len(oracle_signals) + funnel["narrative_with_spike"]
+            _oracle_status = "ERR" if oracle_failed else "OK"
+            _nar_status_claim = "ERR" if narrative_failed else "OK"
+            _regime = "degraded" if result["data_completeness"] < 1.0 else "normal"
+            if _total_candidates == 0:
+                _regime = "dry"
+
+            _claim_id = emit_claim_bead(
+                bead_chain,
+                conclusion=(
+                    f"Pipeline {_regime}: {_total_candidates} candidates, "
+                    f"data_completeness={result['data_completeness']}, "
+                    f"oracle={_oracle_status}, narrative={_nar_status_claim}"
+                ),
+                reasoning_trace=(
+                    f"oracle_signals={len(oracle_signals)}, "
+                    f"narrative_spikes={funnel['narrative_with_spike']}, "
+                    f"sources_failed={result['sources_failed']}"
+                ),
+                confidence_basis="source_health",
+                domain="pipeline_regime",
+                premises_ref=fact_bead_ids,
+                cycle_start=cycle_start,
+                cycle_end=datetime.now(timezone.utc),
+            )
+            if _claim_id:
+                claim_bead_ids.append(_claim_id)
+        except Exception:
+            pass
+
     # Step 9: Conviction Scoring
     scorer = ConvictionScorer()
 
@@ -874,10 +933,12 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         elif score.recommendation == "PAPER_TRADE":
             token_symbol = (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN")
             try:
+                # Use market_cap (already extracted at line 675); this is FDV/mcap for entry reference
+                _entry_fdv = market_cap
                 paper_candidate = {
                     "token_mint": mint,
                     "token_symbol": token_symbol,
-                    "price_usd": float((oracle_sig or {}).get("market_cap_usd", 0)),
+                    "price_usd": _entry_fdv,
                     "liquidity_usd": float((oracle_sig or {}).get("liquidity_usd", 0)),
                     "volume_usd": float((oracle_sig or {}).get("volume_usd", (oracle_sig or {}).get("total_buy_usd", 0))),
                     "source": (oracle_sig or {}).get("source", "unknown"),
@@ -925,10 +986,11 @@ async def run_heartbeat(timeout_seconds: float = 120.0) -> dict[str, Any]:
         elif score.recommendation == "WATCHLIST":
             token_symbol = (oracle_sig or narrative_sig or {}).get("token_symbol", "UNKNOWN")
             try:
+                _entry_fdv = market_cap
                 paper_candidate = {
                     "token_mint": mint,
                     "token_symbol": token_symbol,
-                    "price_usd": float((oracle_sig or {}).get("market_cap_usd", 0)),
+                    "price_usd": _entry_fdv,
                     "liquidity_usd": float((oracle_sig or {}).get("liquidity_usd", 0)),
                     "volume_usd": float((oracle_sig or {}).get("volume_usd", (oracle_sig or {}).get("total_buy_usd", 0))),
                     "source": (oracle_sig or {}).get("source", "unknown"),
