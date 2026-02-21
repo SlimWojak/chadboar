@@ -151,6 +151,51 @@ async def execute_swap(
                 tx_id = rpc_data.get("result", "")
                 submit_via = "helius_rpc"
 
+        # Step 5: Confirm transaction landed on-chain
+        confirmed = False
+        if tx_id:
+            helius_key = os.environ.get("HELIUS_API_KEY", "")
+            confirm_url = (
+                f"https://mainnet.helius-rpc.com/?api-key={helius_key}"
+                if helius_key
+                else "https://api.mainnet-beta.solana.com"
+            )
+            async with httpx.AsyncClient(timeout=30) as rpc:
+                for _attempt in range(6):  # Poll up to ~30s
+                    await asyncio.sleep(5)
+                    try:
+                        sig_resp = await rpc.post(confirm_url, json={
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "getSignatureStatuses",
+                            "params": [[tx_id], {"searchTransactionHistory": False}],
+                        })
+                        sig_data = sig_resp.json()
+                        statuses = sig_data.get("result", {}).get("value", [])
+                        if statuses and statuses[0] is not None:
+                            if statuses[0].get("err") is None:
+                                confirmed = True
+                                break
+                            else:
+                                return {
+                                    "status": "FAILED",
+                                    "direction": direction,
+                                    "token_mint": token_mint,
+                                    "error": f"Tx landed but failed on-chain: {statuses[0]['err']}",
+                                    "tx_signature": tx_id,
+                                }
+                    except Exception:
+                        pass
+
+        if not confirmed:
+            return {
+                "status": "FAILED",
+                "direction": direction,
+                "token_mint": token_mint,
+                "error": f"Tx submitted via {submit_via} but not confirmed after 30s (tx={tx_id})",
+                "tx_signature": tx_id,
+            }
+
         return {
             "status": "SUCCESS",
             "direction": direction,
@@ -162,7 +207,8 @@ async def execute_swap(
             "route_plan": _summarize_route(quote),
             "tx_signature": tx_id,
             "submit_via": submit_via,
-            "message": f"Trade executed via {submit_via}. Tx: {tx_id}",
+            "confirmed": True,
+            "message": f"Trade confirmed on-chain via {submit_via}. Tx: {tx_id}",
         }
 
     except Exception as e:
