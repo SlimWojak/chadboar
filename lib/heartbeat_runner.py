@@ -1332,6 +1332,65 @@ async def stage_finalize(
 
     safe_write_json(state_path, state)
 
+    # ── Auto-generate state/latest.md ──────────────────────────────────
+    # Deterministic snapshot so Grok (and humans) always see accurate
+    # numbers.  Previously Grok wrote this file itself and hallucinated
+    # balances and position counts.
+    try:
+        positions = state.get("positions", [])
+        # Group positions by mint
+        by_mint: dict[str, list[dict]] = {}
+        for p in positions:
+            by_mint.setdefault(p["token_mint"], []).append(p)
+
+        pos_lines = []
+        for mint, entries in by_mint.items():
+            sym = entries[0].get("token_symbol", mint[:8])
+            total_tokens = sum(e.get("entry_amount_tokens", 0) for e in entries)
+            total_sol = sum(e.get("entry_amount_sol", 0) for e in entries)
+            avg_mc = sum(e.get("entry_market_cap_usd", 0) for e in entries) / len(entries)
+            pos_lines.append(
+                f"  {sym} x{len(entries)} | {total_sol:.4f} SOL | "
+                f"avg mc ${avg_mc:,.0f} | {total_tokens/1e6:.1f}M tokens"
+            )
+
+        unique_tokens = len(by_mint)
+        total_deployed = sum(p.get("entry_amount_sol", 0) for p in positions)
+        bal = state.get("current_balance_sol", 0)
+        wins = state.get("total_wins", 0)
+        losses = state.get("total_losses", 0)
+        consec = state.get("consecutive_losses", 0)
+        paper_open = result.get("paper_open", 0)
+        hb_time = state.get("last_heartbeat_time", "unknown")
+        health = result.get("health_line", "DIAG UNAVAILABLE")
+
+        decisions_summary = "; ".join(result.get("decisions", [])[:8]) or "none"
+        errors_summary = "; ".join(result.get("errors", [])[:5]) or "none"
+
+        latest_md = (
+            f"# ChadBoar Status — {today}\n\n"
+            f"**Balance:** {bal:.4f} SOL\n"
+            f"**Deployed:** {total_deployed:.4f} SOL ({total_deployed/max(bal+total_deployed,0.01)*100:.1f}% of pot)\n"
+            f"**Positions:** {len(positions)} entries across {unique_tokens} tokens\n"
+            f"**W/L:** {wins}W {losses}L (consec losses: {consec})\n"
+            f"**Paper Open:** {paper_open}\n"
+            f"**Mode:** {'DRY RUN' if dry_run else 'LIVE'}\n"
+            f"**Last Heartbeat:** {hb_time}\n\n"
+            f"## Positions\n"
+        )
+        if pos_lines:
+            latest_md += "\n".join(pos_lines) + "\n"
+        else:
+            latest_md += "  (none)\n"
+        latest_md += (
+            f"\n## Recent Decisions\n{decisions_summary}\n"
+            f"\n## Errors\n{errors_summary}\n"
+            f"\n## Health\n{health}\n"
+        )
+        Path("state/latest.md").write_text(latest_md)
+    except Exception:
+        pass  # Non-critical — don't break heartbeat if latest.md write fails
+
     # Legacy flight recorder
     try:
         from lib.chain.bead_chain import append_bead as chain_append
