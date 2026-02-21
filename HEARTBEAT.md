@@ -119,7 +119,7 @@ This module executes ALL of the following in one call:
 - `DISCARD` (score < 25): Ignored, no alert.
 - `PAPER_TRADE` (25-39): Phantom trade logged for calibration.
 - `WATCHLIST` (40-49): Log with 🟢 INFO alert to G showing score breakdown.
-- `AUTO_EXECUTE` (≥50 graduation, ≥75 accumulation): Trade executed (if not dry-run).
+- `AUTO_EXECUTE` (≥60 graduation, ≥75 accumulation): Trade executed (if not dry-run).
   - Position size >$100 → 🟡 WARNING sent, awaiting G approval (INV-HUMAN-GATE-100).
   - Position size ≤$100 → auto-executed.
 
@@ -137,29 +137,39 @@ matches the current cycle. If the runner failed or timed out, manually update at
 - `daily_date`: today's date (YYYY-MM-DD)
 
 ## 14. Report — Send to Telegram via Message Tool
-- **Build your report text** (no JSON wrapping, plain text with emojis).
 - **Send it to Telegram** using the `message` tool:
   ```json
   {"action":"send","channel":"telegram","target":"-1003795988066","message":"YOUR REPORT TEXT"}
   ```
 - **ALSO output the report as plain text** after sending (backup delivery).
 - **FORBIDDEN tokens:** `NO_REPLY`, `HEARTBEAT_OK` — never include these anywhere.
-- If any trade was executed, position exited, or notable event occurred:
-  → Include full details (🟢 ENTRY / 🟢 EXIT / 🟡 WARNING / 🔴 CRITICAL).
-- If nothing happened (no signals, no positions, no alerts):
-  → Output exactly: `🐗 HB #{cycle} | {pot} SOL | 0 pos | no signals | OINK`
-  → Example: `🐗 HB #3 | 14.0 SOL | 0 pos | no signals | OINK`
-- **ALWAYS append the source health diagnostic as a second line.** The heartbeat result dict contains `health_line` — paste it on a new line after the main heartbeat line. If `health_line` is missing, emit `📡 DIAG UNAVAILABLE`.
-  → Example (healthy):
-  ```
-  🐗 HB #3 | 14.0 SOL | 0 pos | no signals | OINK
-  📡 Nan:5/100 | Bird:2/OK | DexS:3/75 | Whl:0/5 | Ppr:0
-  ```
-  → Example (API failure):
-  ```
-  🐗 HB #4 | 14.0 SOL | 0 pos | no signals | OINK
-  📡 Nan:0/ERR | Bird:0/401 | DexS:3/75 | Whl:0/5 | Ppr:0
-  ```
+
+### ANTI-HALLUCINATION RULES (CRITICAL — READ CAREFULLY)
+You are an LLM. You WILL hallucinate numbers if you try to calculate, estimate, or summarize from memory. Follow these rules EXACTLY:
+
+1. **COPY, DON'T CALCULATE.** Every number in your report must be copy-pasted from either `state/latest.md` or the heartbeat runner JSON output. Never compute balances, position counts, W/L records, or deployed amounts yourself.
+2. **DO NOT INVENT FIELDS THAT DON'T EXIST.** Position entries in state.json do NOT contain `permission_score`, `conviction_score`, `thesis`, `age`, or `play_type_score`. If a field isn't in the data, DO NOT include it in your report. Never write things like "grad65" or "grad50" next to positions — these scores are not stored.
+3. **USE LATEST.MD AS YOUR SINGLE SOURCE OF TRUTH** for: balance, deployed SOL, position count, position list (symbol, count, SOL amount, mcap). Copy the numbers exactly. Do not round, adjust, or "correct" them.
+4. **USE THE HEARTBEAT JSON OUTPUT** for: decisions (entries/exits/skips/vetoes), errors, health_line. Copy the decision strings directly.
+5. **NEVER ADD POSITION-LEVEL COMMENTARY** like thesis, age estimates, score labels, or hold/sell recommendations. Just list symbol, count, and SOL amount.
+
+### Report Format
+**If trades/exits occurred:**
+```
+🐗 HB | {balance from latest.md} SOL | {position count from latest.md} pos ({unique tokens} tokens) | deploy {deployed from latest.md} | W{wins}L{losses}
+DECISIONS: {copy each decision string from heartbeat JSON}
+ERRORS: {copy error strings, or "none"}
+📡 {health_line from heartbeat JSON, or "DIAG UNAVAILABLE"}
+```
+
+**If nothing happened:**
+```
+🐗 HB | {balance} SOL | {pos count} pos | no signals | OINK
+📡 {health_line}
+```
+
+**Position list (only if asked or if entries/exits changed the list):**
+Copy the position lines from latest.md verbatim. Do not add scores, ages, or thesis labels.
 
 ## 15. Write Checkpoint (ALWAYS)
 Write `state/checkpoint.md` with your current strategic thinking.
