@@ -350,14 +350,31 @@ async def stage_execute_exits(
         entry_sol = pos.get("entry_amount_sol", 0)
         sol_portion = entry_sol * exit_pct / 100
 
-        sell_result = await execute_swap(
-            direction="sell",
-            token_mint=mint,
-            amount=sell_amount,
-            dry_run=dry_run,
-            slippage_bps=500,
-            wallet_pubkey=wallet_pubkey,
-        )
+        # Escalating slippage for stop-loss / critical exits.
+        # Micro-cap tokens that trigger SL often have thin liquidity —
+        # 5% slippage fails with Custom 6024.  Getting partial value
+        # back beats holding to zero.
+        is_critical = decision.get("urgency") in ("critical", "high")
+        slippage_levels = [500, 1500, 4900] if is_critical else [500]
+
+        sell_result = None
+        for slippage_bps in slippage_levels:
+            sell_result = await execute_swap(
+                direction="sell",
+                token_mint=mint,
+                amount=sell_amount,
+                dry_run=dry_run,
+                slippage_bps=slippage_bps,
+                wallet_pubkey=wallet_pubkey,
+            )
+            sell_status = sell_result.get("status", "")
+            if sell_status in ("SUCCESS", "DRY_RUN"):
+                break
+            err_str = sell_result.get("error", "")
+            # Custom 6024 = Jupiter ExceededSlippageTolerance — retry with
+            # higher slippage.  Any other failure is not slippage-related.
+            if "6024" not in err_str:
+                break
 
         if sell_result.get("status") == "SUCCESS":
             sell_out = float(sell_result.get("amount_out", 0))
@@ -375,13 +392,24 @@ async def stage_execute_exits(
 
         sol_returned_total += sol_received
 
+        # Win/loss tracking (same logic as pulse_quick_scan)
+        pnl_pct_exit = ((sol_received - sol_portion) / sol_portion * 100) if sol_portion > 0 else 0.0
+        is_win = sol_received > sol_portion
+
         # Update state atomically
         state = safe_read_json(state_path)
         if exit_pct >= 100:
-            # Full exit — remove position
-            state["positions"] = [
-                p for p in state["positions"] if p["token_mint"] != mint
-            ]
+            # Full exit — remove THIS position only (not all entries
+            # sharing the same mint, which breaks duplicate-mint positions
+            # like XMN x2).
+            found = False
+            new_positions = []
+            for p in state.get("positions", []):
+                if not found and p["token_mint"] == mint:
+                    found = True  # skip first match
+                    continue
+                new_positions.append(p)
+            state["positions"] = new_positions
         else:
             # Partial exit — reduce token amount and SOL allocation
             for p in state["positions"]:
@@ -394,6 +422,15 @@ async def stage_execute_exits(
             state.get("current_balance_sol", 0) + sol_received
         )
         state["total_trades"] = state.get("total_trades", 0) + 1
+        if is_win:
+            state["total_wins"] = state.get("total_wins", 0) + 1
+            state["consecutive_losses"] = 0
+        else:
+            state["total_losses"] = state.get("total_losses", 0) + 1
+            state["consecutive_losses"] = state.get("consecutive_losses", 0) + 1
+            bal = max(state.get("current_balance_sol", 1), 0.01)
+            loss_contribution = abs(pnl_pct_exit / 100) * sol_portion / bal * 100
+            state["daily_loss_pct"] = state.get("daily_loss_pct", 0) + loss_contribution
         safe_write_json(state_path, state)
 
         result["decisions"].append(

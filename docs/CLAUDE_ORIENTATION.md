@@ -332,6 +332,24 @@ signed_tx = VersionedTransaction(tx.message, [keypair])
 **Fix**: Removed Jito from the execution path entirely. Go direct to Helius RPC with `skipPreflight=True`, 3 retries with 2s gaps (handles Solana leader rotation), Jupiter auto priority fees (`prioritizationFeeLamports: "auto"`). If Jito is needed in the future, must implement tip transaction construction.
 **Regression test**: Trade execution should complete in <10s (quote + sign + submit + confirm). If taking >30s, something is adding unnecessary latency.
 
+### 14. SL Exit Infinite Retry Loop (Custom 6024 slippage failure)
+**File**: lib/heartbeat_runner.py (stage_execute_exits)
+**Bug**: `stage_execute_exits` used fixed `slippage_bps=500` (5%) for ALL exits. Micro-cap tokens that trigger stop-loss have cratered in price and liquidity. Selling at 5% max slippage causes Jupiter Custom 6024 (ExceededSlippageTolerance). The bot logged the failure and moved on. Next heartbeat: same SL detection, same 5% attempt, same failure. Position bled from -30% to -84% over multiple cycles with no exit.
+**Fix**: Escalating slippage for critical/high urgency exits: 500 → 1500 → 4900 bps. Only escalates on Custom 6024 errors. Normal exits (TP, decay) stay at 500 bps.
+**Regression test**: If a position persists past its SL threshold for more than 2 heartbeats, escalation is broken. Check exit_execution stage health for `exits_failed > 0` on the same mint across cycles.
+
+### 15. Exit Win/Loss Counters Never Updated
+**File**: lib/heartbeat_runner.py (stage_execute_exits)
+**Bug**: `stage_execute_exits` incremented `total_trades` but never `total_wins`, `total_losses`, or `consecutive_losses`. Only `pulse_quick_scan.py` had this logic. The circuit breaker (3 consecutive losses = 50% size reduction) was blind to all watchdog exits. Could accumulate unlimited losses without triggering risk reduction.
+**Fix**: After each successful exit, compute PnL from `sol_received vs sol_portion`. Update `total_wins`/`total_losses`, reset/increment `consecutive_losses`, track `daily_loss_pct`.
+**Regression test**: After any exit via watchdog, check state.json. `total_wins + total_losses` should increase by 1. If `total_wins == 0 AND total_losses == 0` after confirmed exits, tracking is broken.
+
+### 16. Full Exit Deletes All Duplicate-Mint Positions
+**File**: lib/heartbeat_runner.py (stage_execute_exits)
+**Bug**: Full exit filter `state["positions"] = [p for p in ... if p["token_mint"] != mint]` removes ALL entries for that mint. But the sell only covers the first match's `entry_amount_tokens`. For XMN x3 (three separate buy entries), one exit would sell ~300k tokens but delete all three entries (~916k tokens tracked). Remaining ~616k tokens become orphaned on-chain with no state tracking.
+**Fix**: Remove only the first matching position entry (set `found` flag, skip first match, keep rest).
+**Regression test**: After exiting one position of a multi-entry token, check that remaining entries for that mint still exist in state.json.
+
 ---
 
 ## Boar Wrapper
@@ -360,16 +378,19 @@ async def c():
 asyncio.run(c())"
 
 # Token balance check (verify positions are real)
+# NOTE: PumpFun tokens use Token-2022, NOT standard SPL Token
 boar -c "import asyncio, httpx, os
 rpc = f'https://mainnet.helius-rpc.com/?api-key={os.environ[\"HELIUS_API_KEY\"]}'
 async def c():
   async with httpx.AsyncClient() as cl:
-    r = await cl.post(rpc, json={'jsonrpc':'2.0','id':1,'method':'getTokenAccountsByOwner','params':['B1rUxZxotGKLaoaLcs3evctfJFP6YvywRwCaech8wjRo',{'programId':'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'},{'encoding':'jsonParsed'}]})
-    accs = r.json()['result']['value']
-    print(f'{len(accs)} token accounts')
-    for a in accs:
-      info = a['account']['data']['parsed']['info']
-      print(f'  {info[\"mint\"][:12]} = {info[\"tokenAmount\"][\"uiAmount\"]}')
+    for prog, label in [('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA','SPL'),('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb','Token2022')]:
+      r = await cl.post(rpc, json={'jsonrpc':'2.0','id':1,'method':'getTokenAccountsByOwner','params':['B1rUxZxotGKLaoaLcs3evctfJFP6YvywRwCaech8wjRo',{'programId':prog},{'encoding':'jsonParsed'}]})
+      accs = r.json()['result']['value']
+      held = [a for a in accs if float(a['account']['data']['parsed']['info']['tokenAmount'].get('uiAmountString','0')) > 0]
+      print(f'{label}: {len(held)} token accounts with balance')
+      for a in held:
+        info = a['account']['data']['parsed']['info']
+        print(f'  {info[\"mint\"][:12]} = {info[\"tokenAmount\"][\"uiAmount\"]}')
 asyncio.run(c())"
 
 # Signer test
@@ -422,6 +443,9 @@ systemctl --user status openclaw-gateway.service --no-pager
 | Tx submitted but "not confirmed after 32s" | Bad signature (simulate with sigVerify:True) or low priority fee | Check signer uses VersionedTransaction constructor, not sign_message+populate |
 | Positions vanish after heartbeat | stage_finalize overwrites state with stale dict | Ensure finalize re-reads state from disk before writing |
 | Trade execution takes >30s | Dead Jito path adding 15s timeout | Jito removed; go direct to Helius RPC with retries |
+| SL exit fails with Custom 6024 every heartbeat | Fixed 500bps (5%) slippage too low for cratered micro-caps | stage_execute_exits now escalates: 500→1500→4900 bps for critical/high urgency exits |
+| total_wins/total_losses stuck at 0 despite exits | stage_execute_exits never updated win/loss counters | Win/loss tracking added to stage_execute_exits (same logic as pulse_quick_scan) |
+| Full exit deletes ALL positions for a mint | `p["token_mint"] != mint` filter removes duplicate entries (XMN x3) | Changed to remove only the first matching position entry |
 
 ## Key Invariants
 
@@ -437,3 +461,7 @@ systemctl --user status openclaw-gateway.service --no-pager
 10. **SIGNER METHOD**: MUST use `VersionedTransaction(msg, [keypair])` constructor. NEVER use `keypair.sign_message()` + `VersionedTransaction.populate()` — produces invalid signatures.
 11. **FINALIZE RE-READ**: `stage_finalize()` MUST re-read state from disk before writing. The `state` dict passed from `run_heartbeat()` is stale after execution writes positions.
 12. **NO JITO WITHOUT TIP**: Jito bundles require a tip transaction. Without it, bundles are always rejected. Use direct RPC submission instead.
+13. **ESCALATING SLIPPAGE ON SL**: `stage_execute_exits` MUST use escalating slippage (500→1500→4900 bps) for critical/high urgency exits. Micro-cap tokens that trigger SL have thin liquidity — fixed 5% slippage causes infinite retry loops where Custom 6024 fails every heartbeat while the position bleeds to zero.
+14. **EXIT WIN/LOSS TRACKING**: `stage_execute_exits` MUST update `total_wins`, `total_losses`, `consecutive_losses`, and `daily_loss_pct` after each exit. Without this, the circuit breaker (3 consecutive losses = 50% size reduction) is blind to watchdog exits.
+15. **SINGLE POSITION REMOVAL ON EXIT**: Full exits MUST remove only the FIRST matching position entry for a mint, NOT all entries. Multiple buys of the same token create separate position entries (e.g. XMN x3). Removing all entries on a single exit deletes unrelated positions and orphans on-chain tokens.
+16. **TOKEN-2022 FOR ON-CHAIN CHECKS**: PumpFun tokens use Token-2022 program (`TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`), NOT standard SPL Token (`TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`). Diagnostic commands checking `getTokenAccountsByOwner` MUST query Token-2022 or they will show 0 accounts.
