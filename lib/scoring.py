@@ -258,18 +258,14 @@ class ConvictionScorer:
             breakdown_extra['pulse_clean_holders'] = 5
             parts.append("clean holders")
 
-        # Stage bonus: bonded (graduated) or bonding (pre-graduation scalp)
+        # Stage bonus: bonding (pre-graduation) gets the bonus.
+        # Bonded (post-graduation) gets NO bonus — data shows -45% avg PnL,
+        # fast money already exited. Penalty applied separately as red flag.
         bonded_bonus = self.graduation_config.get('bonded_stage_bonus', 5)
-        if signals.pulse_stage == "bonded" and bonded_bonus > 0:
+        if signals.pulse_stage == "bonding" and bonded_bonus > 0:
             score += bonded_bonus
-            breakdown_extra['pulse_bonded_bonus'] = bonded_bonus
-            parts.append(f"bonded +{bonded_bonus}")
-        elif signals.pulse_stage == "bonding" and bonded_bonus > 0:
-            # Pre-graduation: smaller bonus — the play is riskier but still valid
-            bonding_bonus = max(bonded_bonus - 2, 2)
-            score += bonding_bonus
-            breakdown_extra['pulse_bonding_bonus'] = bonding_bonus
-            parts.append(f"bonding +{bonding_bonus}")
+            breakdown_extra['pulse_bonding_bonus'] = bonded_bonus
+            parts.append(f"bonding +{bonded_bonus}")
 
         score = min(score, max_points)
         reasoning = f"Pulse: {', '.join(parts)}" if parts else "Pulse: no quality signals"
@@ -365,6 +361,20 @@ class ConvictionScorer:
         # is always false. On-chain volume without social confirmation is suspicious
         # but not an absolute block — Rug Warden is the safety gate.
         # Penalty applied later in red flags section (see 'unsocialized_volume').
+
+        # VETO 4: Serial deployer (data shows -26% avg PnL — worst red flag by far)
+        if signals.pulse_deployer_migrations > 5:
+            return ConvictionScore(
+                ordering_score=0,
+                permission_score=0,
+                breakdown={},
+                red_flags={"pulse_serial_deployer": -100},
+                primary_sources=[],
+                recommendation="VETO",
+                position_size_sol=0.0,
+                reasoning=f"VETO: Serial deployer ({signals.pulse_deployer_migrations} prior migrations — rug trap pattern)",
+                play_type=play_type,
+            )
 
         # VETO 6: Graduation daily sublimit exceeded
         grad_max_daily = self.graduation_config.get('max_daily_plays', 3)
@@ -588,11 +598,31 @@ class ConvictionScorer:
             permission_score -= penalty
             reasoning_parts.append(f"PULSE RED FLAG: Snipers {signals.pulse_sniper_pct:.1f}% (-{penalty} pts)")
 
-        if signals.pulse_deployer_migrations > 5:
-            penalty = 10
-            red_flags['pulse_serial_deployer'] = -penalty
+        # pulse_serial_deployer: Now a hard VETO (see VETO 4 above)
+        # Kept as comment — the >5 migrations check fires as VETO before reaching here.
+
+        # FDV DEATH ZONE: $25k-100k graduation plays have -33% to -48% avg PnL
+        # Data shows $10k-25k is the sweet spot (39% win rate), above $25k drops sharply.
+        if (play_type == "graduation"
+                and signals.entry_market_cap_usd > 25000
+                and signals.entry_market_cap_usd < 100000):
+            penalty = 15
+            red_flags['fdv_death_zone'] = -penalty
             permission_score -= penalty
-            reasoning_parts.append(f"PULSE RED FLAG: Deployer {signals.pulse_deployer_migrations} migrations (-{penalty} pts)")
+            reasoning_parts.append(
+                f"FDV DEATH ZONE: ${signals.entry_market_cap_usd:,.0f} "
+                f"(graduation $25k-100k is -40% avg PnL, -15 pts)"
+            )
+
+        # POST-BONDING TRAP: pulse-bonded tokens have -45.74% avg PnL.
+        # Pre-bonding (bonding) is the play; post-bonding means the fast money already left.
+        if signals.pulse_stage == "bonded":
+            penalty = 10
+            red_flags['pulse_post_bonding'] = -penalty
+            permission_score -= penalty
+            reasoning_parts.append(
+                f"POST-BONDING: Already graduated — fast money exited (-{penalty} pts)"
+            )
 
         # PULSE BONUSES for accumulation play type (graduation handles these in score_pulse_quality)
         if play_type == "accumulation":

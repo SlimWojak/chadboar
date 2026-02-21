@@ -762,6 +762,15 @@ async def stage_score_and_execute(
         oracle_sig = next((s for s in oracle_signals if s["token_mint"] == mint), None)
         narrative_sig = next((s for s in narrative_signals if s["token_mint"] == mint), None)
 
+        # MINIMUM VOLUME GATE: Skip tokens with <$5k volume (39% of trades were
+        # on dead/illiquid tokens with 5% win rate — pure noise in the bead stream)
+        _vol_usd = float((oracle_sig or {}).get("volume_usd",
+                         (oracle_sig or {}).get("total_buy_usd", 0)))
+        if _vol_usd < 5000:
+            funnel["scored_discard"] = funnel.get("scored_discard", 0) + 1
+            result["decisions"].append(f"\U0001f417 SKIP: {mint[:8]} — volume ${_vol_usd:,.0f} < $5k minimum")
+            continue
+
         if oracle_sig and oracle_sig.get("buyer_depth", {}).get("smart_money_buyers", 0) > 0:
             whales = oracle_sig["buyer_depth"]["smart_money_buyers"]
         else:
@@ -1126,6 +1135,15 @@ async def stage_score_and_execute(
                     f"(permission {score.permission_score}, ordering {score.ordering_score}, "
                     f"primary {len(score.primary_sources)}) OINK!"
                 )
+                # Emit proposal bead for dry-run so signal chain is complete
+                if bead_chain and signal_bead_id:
+                    emit_proposal_bead(
+                        bead_chain, signal_bead_id=signal_bead_id,
+                        action="ENTER_LONG", token_mint=mint,
+                        token_symbol=token_symbol,
+                        position_size_sol=score.position_size_sol,
+                        execution_venue="paper", gate="dry_run",
+                    )
             else:
                 result["decisions"].append(
                     f"\U0001f417\U0001f525 EXECUTE: {mint[:8]} \u2014 [{score.play_type}] {score.position_size_sol:.4f} SOL "
@@ -1148,6 +1166,17 @@ async def stage_score_and_execute(
                     if buy_status != "SUCCESS":
                         error_msg = buy_result.get("error", "unknown")
                         result["errors"].append(f"Trade FAILED for {mint[:8]}: {error_msg}")
+                        # Record failed execution in bead chain
+                        if bead_chain and signal_bead_id:
+                            emit_proposal_rejected_bead(
+                                bead_chain, signal_bead_id=signal_bead_id,
+                                token_mint=mint, token_symbol=token_symbol,
+                                rejection_source="execution",
+                                rejection_reason=f"Swap failed: {error_msg}",
+                                rejection_category=RejectionCategory.SCORE_BELOW_THRESHOLD,
+                                scoring_breakdown=score.breakdown,
+                                risk_metrics={"pot_sol": state.get("current_balance_sol", 0)},
+                            )
                     else:
                         amount_out = float(buy_result.get("amount_out", 0))
                         entry_price = 0.0
