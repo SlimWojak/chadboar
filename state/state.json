@@ -1,12 +1,175 @@
 {
   "starting_balance_sol": 14.0,
-  "current_balance_sol": 14.0,
+  "current_balance_sol": 10.702390766694148,
   "current_balance_usd": 1188.74,
   "sol_price_usd": 84.91,
-  "positions": [],
-  "daily_exposure_sol": 0.0,
+  "positions": [
+    {
+      "token_mint": "4FNPVWgVBF4Dj7ggvY9NwoaDx8fxviTrJWxpyjwYpump",
+      "token_symbol": "MoltPad",
+      "direction": "long",
+      "entry_price": 1.8121393126884395e-11,
+      "entry_amount_sol": 0.1177717583323519,
+      "entry_amount_tokens": 551833951273.0,
+      "entry_time": "2026-02-21T04:50:27.031393",
+      "peak_price": 0,
+      "play_type": "graduation",
+      "entry_market_cap_usd": 16976.2,
+      "entry_liquidity_usd": 5092.89,
+      "thesis": "Scalp: pulse score 55, mcap $16,976",
+      "signals": [
+        "pulse",
+        "warden"
+      ]
+    },
+    {
+      "token_mint": "9z9KjBeCaeiiiEhWCKv6nPnyssWwVVMiFfdzRKjepump",
+      "token_symbol": "lobster",
+      "direction": "long",
+      "entry_price": 4.6745448938834533e-11,
+      "entry_amount_sol": 0.35331527499705573,
+      "entry_amount_tokens": 641773704101.0,
+      "entry_time": "2026-02-21T04:50:56.835549",
+      "peak_price": 0,
+      "play_type": "graduation",
+      "thesis": "graduation: perm 63, ord 63, primary 2",
+      "signals": [
+        "pulse",
+        "warden"
+      ]
+    },
+    {
+      "token_mint": "Bh7XYsJgaCRdREgzfjsXDQDobFeqmVBjccGQcscpump",
+      "token_symbol": "TUZKI",
+      "direction": "long",
+      "entry_price": 2.3229020971003452e-11,
+      "entry_amount_sol": 0.35331527499705573,
+      "entry_amount_tokens": 1291487917325.0,
+      "entry_time": "2026-02-21T05:00:32.453943",
+      "peak_price": 0,
+      "play_type": "graduation",
+      "thesis": "graduation: perm 53, ord 63, primary 2",
+      "signals": [
+        "pulse",
+        "warden"
+      ]
+    },
+    {
+      "token_mint": "5gGMscSKXgw9eksQhoeGpszE4XuQ2Y6942pcA35CsQaC",
+      "token_symbol": "RASP",
+      "direction": "long",
+      "entry_price": 3.771026704611003e-11,
+      "entry_amount_sol": 0.35331527499705573,
+      "entry_amount_tokens": 795539312375.0,
+      "entry_time": "2026-02-21T05:00:48.035021",
+      "peak_price": 0,
+      "play_type": "graduation",
+      "thesis": "graduation: perm 63, ord 63, primary 2",
+      "signals": [
+        "pulse",
+        "warden"
+      ]
+    },
+    {
+      "token_mint": "B57TFKtJHnGf1FAaFNogTE4N1PsKAyUik9QkNQ73pump",
+      "token_symbol": "FireLobster",
+      "direction": "long",
+      "entry_price": 2.3636973821635665e-11,
+      "entry_amount_sol": 0.35331527499705573,
+      "entry_amount_tokens": 1269198000629.0,
+      "entry_time": "2026-02-21T05:00:49.423919",
+      "peak_price": 0,
+      "play_type": "graduation",
+      "thesis": "graduation: perm 58, ord 68, primary 2",
+      "signals": [
+        "pulse",
+        "warden"
+      ]
+    },
+    {
+      "token_mint": "FYSGNeQHULS5ziC6dNcFZieBgmow17W3HzeoSQcipump",
+      "token_symbol": "UL",
+      "direction": "long",
+      "entry_price": 2.5701749498397105e-12,
+      "entry_amount_sol": 0.35331527499705573,
+      "entry_amount_tokens": 11672357135537.0,
+      "entry_time": "2026-02-21T05:00:52.633495",
+      "peak_price": 0,
+      "play_type": "graduation",
+      "thesis": "graduation: perm 71, ord 71, primary 2",
+      "signals": [
+        "pulse",
+        "warden"
+      ]
+    },
+    {
+      "token_mint": "HPhbUjgv2aQMTsAqvmiGk4RcDKQKMYJdaHkrapMYpump",
+      "token_symbol": "Gnomes",
+      "direction": "long",
+      "entry_price": 2.565051328165246e-11,
+      "entry_amount_sol": 0.35331527499705573,
+      "entry_amount_tokens": 1169567235787.0,
+      "entry_time": "2026-02-21T05:01:01.261688",
+      "peak_price": 0,
+      "play_type": "graduation",
+      "thesis": "graduation: perm 68, ord 68, primary 2",
+      "signals": [
+        "pulse",
+        "warden"
+      ]
+    },
+    {
+      "token_mint": "2uBXYNQCJp86m2dx6PHScA84sShopuzQXZ1capt7BUcw",
+      "token_symbol": "ClawCode",
+      "direction": "long",
+      "entry_price": 2.669044953915702e-11,
+      "entry_amount_sol": 0.35331527499705573,
+      "entry_amount_tokens": 1123997550934.0,
+      "entry_time": "2026-02-21T05:01:02.592344",
+      "peak_price": 0,
+      "play_type": "graduation",
+      "thesis": "graduation: perm 56, ord 66, primary 2",
+      "signals": [
+        "pulse",
+        "warden"
+      ]
+    },
+    {
+      "token_mint": "4FNPVWgVBF4Dj7ggvY9NwoaDx8fxviTrJWxpyjwYpump",
+      "token_symbol": "MoltPad",
+      "direction": "long",
+      "entry_price": 3.090238747464097e-11,
+      "entry_amount_sol": 0.35331527499705573,
+      "entry_amount_tokens": 970798775336.0,
+      "entry_time": "2026-02-21T05:01:11.246469",
+      "peak_price": 0,
+      "play_type": "graduation",
+      "thesis": "graduation: perm 63, ord 63, primary 2",
+      "signals": [
+        "pulse",
+        "warden"
+      ]
+    },
+    {
+      "token_mint": "7yKT27QduTipMASRqRXK8Cwd3pVAZmcntdbikCXgpump",
+      "token_symbol": "KARMA",
+      "direction": "long",
+      "entry_price": 2.474534548062244e-12,
+      "entry_amount_sol": 0.35331527499705573,
+      "entry_amount_tokens": 12123492047760.0,
+      "entry_time": "2026-02-21T05:01:20.724816",
+      "peak_price": 0,
+      "play_type": "graduation",
+      "thesis": "graduation: perm 51, ord 61, primary 2",
+      "signals": [
+        "pulse",
+        "warden"
+      ]
+    }
+  ],
+  "daily_exposure_sol": 13.79587243852947,
   "daily_date": "2026-02-19",
-  "daily_loss_pct": 0.0,
+  "daily_loss_pct": 0,
   "consecutive_losses": 0,
   "halted": false,
   "halted_at": "",
@@ -14,8 +177,8 @@
   "total_trades": 0,
   "total_wins": 0,
   "total_losses": 0,
-  "last_trade_time": "",
-  "last_heartbeat_time": "2026-02-21T01:52:10.665878",
+  "last_trade_time": "2026-02-21T05:01:20.724816",
+  "last_heartbeat_time": "2026-02-21T07:31:26.805748",
   "dry_run_mode": false,
   "dry_run_cycles_completed": 337,
   "dry_run_target_cycles": 10,

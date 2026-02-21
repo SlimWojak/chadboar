@@ -127,6 +127,7 @@ async def _check_open_positions() -> list[dict[str, Any]]:
                 continue
 
             current_price = float(data.get("price", 0))
+            current_mc = float(data.get("mc", data.get("fdv", 0)))
             if current_price <= 0:
                 continue
 
@@ -135,8 +136,12 @@ async def _check_open_positions() -> list[dict[str, Any]]:
                 pos["peak_price"] = current_price
                 peak_price = current_price
 
-            # Calculate PnL and age
-            pnl_pct = ((current_price - entry_price) / entry_price) * 100
+            # Calculate PnL using market cap (avoids per-token unit mismatch)
+            entry_mc = float(pos.get("entry_market_cap_usd", 0))
+            if entry_mc > 0 and current_mc > 0:
+                pnl_pct = ((current_mc - entry_mc) / entry_mc) * 100
+            else:
+                pnl_pct = 0.0  # Skip — no reliable entry baseline
             age_minutes = (datetime.utcnow() - entry_time).total_seconds() / 60
 
             # Check exit triggers
@@ -191,9 +196,14 @@ async def _check_open_positions() -> list[dict[str, Any]]:
                 p for p in positions_current if p.get("token_mint") != mint
             ]
 
-            # Return SOL adjusted for PnL
+            # Return SOL: prefer actual sell proceeds, fall back to PnL estimate
             entry_sol = pos.get("entry_amount_sol", 0)
-            sol_returned = entry_sol * (1 + pnl_pct / 100)
+            sell_amount_out = float(sell_result.get("amount_out", 0))
+            if sell_result.get("status") == "SUCCESS" and sell_amount_out > 0:
+                sol_returned = sell_amount_out / 1e9  # amount_out is in lamports
+            else:
+                sol_returned = entry_sol * (1 + pnl_pct / 100)
+                sol_returned = max(sol_returned, 0)  # Never go negative
             state["current_balance_sol"] = (
                 state.get("current_balance_sol", 0) + sol_returned
             )
