@@ -82,7 +82,7 @@ For each candidate mint:
 3. **Rug Warden**: 6-point check, play-type-aware thresholds
 4. **Conviction scoring**: weight profile by play type
 5. **Decision**: VETO / DISCARD / PAPER_TRADE / WATCHLIST / AUTO_EXECUTE
-6. **Execution**: Jupiter quote -> sign -> Jito/RPC -> confirm on-chain -> update state
+6. **Execution**: Jupiter quote -> sign -> Helius RPC (3 retries) -> confirm on-chain -> update state
 
 ### Stage 5: Finalize
 Paper trade PnL checks + 6h expiry, heartbeat bead, Merkle anchor (every 50 beads), health_line.
@@ -139,28 +139,29 @@ Time decay fires when: `age >= decay_min AND abs(pnl_pct) < 5%`.
 
 ## Execute Swap Flow
 
-`lib/skills/execute_swap.py` — Jupiter + Jito with Blind KeyMan signing.
+`lib/skills/execute_swap.py` — Jupiter + Helius RPC with Blind KeyMan signing.
 
 ```
 1. Jupiter quote (buy or sell)
 2. If dry_run: return DRY_RUN status, skip rest
 3. verify_isolation() — ensure SIGNER_PRIVATE_KEY not in agent env
-4. Jupiter get_swap_transaction() -> unsigned tx (base64)
+4. Jupiter get_swap_transaction(prioritizationFeeLamports="auto") -> unsigned tx (base64)
 5. sign_transaction() -> isolated subprocess signs -> signed tx (base64)
-6. Submit via Jito bundle (MEV-protected)
-   Fallback: Helius RPC sendTransaction
-7. Confirm on-chain: poll getSignatureStatuses every 5s, up to 30s
+6. Submit to Helius RPC (skipPreflight=True, 3 retries with 2s gaps for leader rotation)
+7. Confirm on-chain: poll getSignatureStatuses every 4s, up to 32s (searchTransactionHistory=True)
    - If confirmed with no error: return SUCCESS
    - If confirmed with error: return FAILED
-   - If not confirmed after 30s: return FAILED
+   - If not confirmed after 32s: return FAILED
 ```
+
+**NOTE**: Jito bundles are NOT used (require a tip transaction we don't build). `lib/clients/jito.py` exists but is unused. Go direct to Helius RPC.
 
 ## Signer Isolation (INV-BLIND-KEY)
 
 Private key NEVER enters agent process memory. Flow:
 1. `keychain.py` reads key from file at SIGNER_KEY_PATH
 2. Spawns subprocess `lib/signer/signer.py` with minimal env (only SIGNER_PRIVATE_KEY, PATH, PYTHONPATH)
-3. Subprocess: decode base64 key -> solders.Keypair -> sign message -> stdout signed tx
+3. Subprocess: decode base64 key -> solders.Keypair -> `VersionedTransaction(msg, [keypair])` -> stdout signed tx
 4. Parent reads stdout, clears key reference
 
 Key file: `/home/autistboar/.config/autistboar/signer.key` (chmod 400, base64 Ed25519)
@@ -305,6 +306,32 @@ else:
 **Bug**: Dry-run mode and failed executions didn't emit proposal/rejected beads -> 713 SIGNAL beads with no corresponding PROPOSAL.
 **Fix**: Dry-run trades emit PROPOSAL with gate="dry_run". Failed trades emit PROPOSAL_REJECTED with rejection_source="execution".
 
+### 11. Signer SignatureFailure (every tx dropped from mempool)
+**File**: lib/signer/signer.py:65-78
+**Bug**: `keypair.sign_message(bytes(msg))` + `VersionedTransaction.populate(msg, [sig])` produces **invalid signatures** for Solana VersionedTransactions. The `sign_message()` method signs raw bytes but Solana validators expect a domain-separated hash with versioned message prefix. Every transaction was accepted by the RPC but silently dropped by validators.
+**Fix**: Use `VersionedTransaction(tx.message, [keypair])` constructor which handles the signing protocol correctly.
+```python
+# WRONG — invalid signature, tx dropped:
+signature = keypair.sign_message(bytes(msg))
+signed_tx = VersionedTransaction.populate(msg, [signature])
+
+# CORRECT — valid signature, tx lands:
+signed_tx = VersionedTransaction(tx.message, [keypair])
+```
+**Regression test**: After signing, simulate with `sigVerify: True`. If `err: SignatureFailure`, the signer is broken. A valid signature produces `err: None` with non-zero `unitsConsumed`.
+
+### 12. State Overwrite by stage_finalize (positions vanish after each heartbeat)
+**File**: lib/heartbeat_runner.py:1283-1292 (stage_finalize)
+**Bug**: `run_heartbeat()` loads `state` at line 1397. This stale dict is passed to all stages. `stage_score_and_execute` correctly re-reads state from disk at line 1211 and writes positions at line 1221. BUT `stage_finalize` receives the original stale `state` (without positions) and writes it back at line 1292, **overwriting every position**. This is why positions appeared as phantom — they existed on disk for milliseconds before finalize clobbered them.
+**Fix**: `stage_finalize` re-reads `state = safe_read_json(state_path)` before applying its updates.
+**Regression test**: After a heartbeat with `trades_attempted > 0`, check state.json immediately. If positions is empty but on-chain tokens exist, finalize is overwriting state.
+
+### 13. Dead Jito Path (15s wasted timeout on every trade)
+**File**: lib/skills/execute_swap.py (old Step 4)
+**Bug**: Jito `send_bundle()` requires a tip transaction (SOL transfer to a Jito tip account) in the bundle. We never included one, so Jito always rejected the bundle. The 15s timeout expired, then we fell back to bare RPC `sendTransaction`. Combined with the signer bug (#11), this meant every trade: Jito timeout (15s) -> RPC submit with bad sig -> dropped.
+**Fix**: Removed Jito from the execution path entirely. Go direct to Helius RPC with `skipPreflight=True`, 3 retries with 2s gaps (handles Solana leader rotation), Jupiter auto priority fees (`prioritizationFeeLamports: "auto"`). If Jito is needed in the future, must implement tip transaction construction.
+**Regression test**: Trade execution should complete in <10s (quote + sign + submit + confirm). If taking >30s, something is adding unnecessary latency.
+
 ---
 
 ## Boar Wrapper
@@ -392,6 +419,9 @@ systemctl --user status openclaw-gateway.service --no-pager
 | Grok reports "Pos:0" but state has positions | Grok misreading heartbeat result or on-chain state | Check state.json vs on-chain |
 | "observe_only" every cycle | Timeout before watchdog/oracle completes | Check API response times |
 | Scoring always DISCARD | Volume gate or broken oracle | Check nansen/pulse API keys |
+| Tx submitted but "not confirmed after 32s" | Bad signature (simulate with sigVerify:True) or low priority fee | Check signer uses VersionedTransaction constructor, not sign_message+populate |
+| Positions vanish after heartbeat | stage_finalize overwrites state with stale dict | Ensure finalize re-reads state from disk before writing |
+| Trade execution takes >30s | Dead Jito path adding 15s timeout | Jito removed; go direct to Helius RPC with retries |
 
 ## Key Invariants
 
@@ -404,3 +434,6 @@ systemctl --user status openclaw-gateway.service --no-pager
 7. **MARKET-CAP PNL**: NEVER use per-token price for PnL. Always use entry_market_cap_usd vs current market cap.
 8. **TX CONFIRMATION**: NEVER update state until tx confirmed on-chain via getSignatureStatuses.
 9. **PAPER TRADE CLOSING**: Uses `closed` boolean field, NOT `status` field.
+10. **SIGNER METHOD**: MUST use `VersionedTransaction(msg, [keypair])` constructor. NEVER use `keypair.sign_message()` + `VersionedTransaction.populate()` — produces invalid signatures.
+11. **FINALIZE RE-READ**: `stage_finalize()` MUST re-read state from disk before writing. The `state` dict passed from `run_heartbeat()` is stale after execution writes positions.
+12. **NO JITO WITHOUT TIP**: Jito bundles require a tip transaction. Without it, bundles are always rejected. Use direct RPC submission instead.
