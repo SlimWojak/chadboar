@@ -228,7 +228,7 @@ async def _check_open_positions() -> list[dict[str, Any]]:
             state["last_trade_time"] = datetime.utcnow().isoformat()
             safe_write_json(STATE_PATH, state)
 
-            # Write exit bead
+            # Write exit bead (enriched for clean bead extraction)
             try:
                 write_bead("exit", {
                     "token_mint": mint,
@@ -240,6 +240,8 @@ async def _check_open_positions() -> list[dict[str, Any]]:
                     "pnl_pct": round(pnl_pct, 2),
                     "exit_reason": exit_reason,
                     "signals": ["scalp_exit"],
+                    "entry_market_cap_usd": pos.get("entry_market_cap_usd", 0),
+                    "play_type": pos.get("play_type", "graduation"),
                 })
             except Exception as e:
                 _log(f"  Bead write error: {e}")
@@ -452,7 +454,7 @@ async def _execute_scalp_entry(
         state["last_trade_time"] = now
         safe_write_json(STATE_PATH, state)
 
-        # Write entry bead
+        # Write entry bead (enriched for clean bead extraction)
         try:
             write_bead("entry", {
                 "token_mint": mint,
@@ -462,6 +464,12 @@ async def _execute_scalp_entry(
                 "price_usd": entry_price,
                 "thesis": new_position["thesis"],
                 "signals": new_position["signals"],
+                "entry_market_cap_usd": mcap,
+                "discovery_source": candidate.get("discovery_source", "pulse"),
+                "score_permission": score_data.get("permission_score", 0),
+                "score_ordering": score_data.get("ordering_score", 0),
+                "red_flags": list(score_data.get("red_flags", {}).keys()),
+                "play_type": "graduation",
             })
         except Exception as e:
             _log(f"  Bead write error: {e}")

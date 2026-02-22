@@ -209,8 +209,15 @@ class MobulaClient:
         return results[:5]
 
 
-async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
-    """Query smart money signals using TGM pipeline with dex-trades fallback."""
+async def query_oracle(token_mint: str | None = None, skip_nansen: bool = False) -> dict[str, Any]:
+    """Query smart money signals using TGM pipeline with dex-trades fallback.
+
+    Args:
+        token_mint: If provided, single-token enrichment mode.
+        skip_nansen: If True, skip all Nansen TGM calls (saves API credits and
+            avoids rate limits when running graduation-only mode where Nansen
+            scores at 0 points). Mobula + Pulse tracks still run.
+    """
     global _diagnostics, _source_health
     _diagnostics = []
     _source_health = {}
@@ -229,7 +236,7 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
         mobula_signals: list[dict[str, Any]] = []
         pulse_signals: list[dict[str, Any]] = []
 
-        if token_mint:
+        if token_mint and not skip_nansen:
             # Single-token mode: use existing netflow + enrich with TGM
             t0 = time.monotonic()
             _log("Single-token mode...")
@@ -258,7 +265,13 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
                 await helius.close()
         else:
             # Broad scan: run TGM and Mobula in parallel
-            tasks_to_run: list = [_run_tgm_pipeline(client)]
+            tgm_task_idx: int | None = None
+            if skip_nansen:
+                _log("Nansen TGM skipped (skip_nansen=True, graduation-only mode)")
+                tasks_to_run: list = []
+            else:
+                tasks_to_run: list = [_run_tgm_pipeline(client)]
+                tgm_task_idx = 0
 
             mobula_client = None
             whales: list[str] = []
@@ -288,15 +301,16 @@ async def query_oracle(token_mint: str | None = None) -> dict[str, Any]:
                         _run_pulse_scan(mobula_client, pulse_url, pulse_endpoint)
                     )
 
-            results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
+            results = await asyncio.gather(*tasks_to_run, return_exceptions=True) if tasks_to_run else []
 
-            # Unpack TGM result (always index 0)
-            tgm_result = results[0]
-            if isinstance(tgm_result, tuple):
-                nansen_signals, holdings_delta, tgm_timing = tgm_result
-                phase_timing.update(tgm_timing)
-            elif isinstance(tgm_result, Exception):
-                _log(f"TGM pipeline FAILED: {tgm_result}")
+            # Unpack TGM result (skipped when skip_nansen=True)
+            if tgm_task_idx is not None and tgm_task_idx < len(results):
+                tgm_result = results[tgm_task_idx]
+                if isinstance(tgm_result, tuple):
+                    nansen_signals, holdings_delta, tgm_timing = tgm_result
+                    phase_timing.update(tgm_timing)
+                elif isinstance(tgm_result, Exception):
+                    _log(f"TGM pipeline FAILED: {tgm_result}")
 
             # Unpack Mobula result
             if mobula_task_idx is not None and mobula_task_idx < len(results):

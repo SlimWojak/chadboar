@@ -457,9 +457,19 @@ async def stage_oracle(
     oracle_failed = False
     oracle_signals: list = []
 
+    # Skip Nansen TGM calls when graduation config says so — saves API credits
+    # and avoids rate limits (Nansen scores at 0 points for graduation plays).
+    _skip_nansen = False
+    try:
+        import yaml as _yaml
+        _risk = _yaml.safe_load(Path("config/risk.yaml").read_text()) or {}
+        _skip_nansen = _risk.get("conviction", {}).get("graduation", {}).get("skip_nansen", False)
+    except Exception:
+        pass
+
     try:
         oracle_result = await asyncio.wait_for(
-            query_oracle(),
+            query_oracle(skip_nansen=_skip_nansen),
             timeout=min(45, time_remaining())
         )
         if oracle_result.get("status") == "OK":

@@ -36,20 +36,32 @@ class Bead(BaseModel):
     pnl_pct: float = 0.0
     exit_reason: str = ""
     market_conditions: str = ""
+    # Enriched fields for clean bead extraction
+    entry_market_cap_usd: float = 0.0
+    discovery_source: str = ""
+    score_permission: int = 0
+    score_ordering: int = 0
+    red_flags: list[str] = Field(default_factory=list)
+    play_type: str = ""
 
     def to_text(self) -> str:
-        """Convert to text for embedding."""
+        """Convert to text for embedding — richer context for similarity search."""
         parts = [
             f"Type: {self.bead_type} {self.direction}",
             f"Token: {self.token_symbol}",
+            f"Play: {self.play_type}" if self.play_type else "",
+            f"MCap: ${self.entry_market_cap_usd:,.0f}" if self.entry_market_cap_usd > 0 else "",
+            f"Score: perm={self.score_permission} ord={self.score_ordering}" if self.score_permission else "",
             f"Thesis: {self.thesis}",
             f"Signals: {', '.join(self.signals)}",
+            f"Red flags: {', '.join(self.red_flags)}" if self.red_flags else "",
+            f"Source: {self.discovery_source}" if self.discovery_source else "",
             f"Outcome: {self.outcome} ({self.pnl_pct:+.1f}%)",
             f"Market: {self.market_conditions}",
         ]
         if self.exit_reason:
             parts.append(f"Exit reason: {self.exit_reason}")
-        return " | ".join(parts)
+        return " | ".join(p for p in parts if p)
 
 
 class EdgeBank:
@@ -81,9 +93,28 @@ class EdgeBank:
                 pnl_pct REAL DEFAULT 0.0,
                 exit_reason TEXT DEFAULT '',
                 market_conditions TEXT DEFAULT '',
-                embedding BLOB
+                embedding BLOB,
+                entry_market_cap_usd REAL DEFAULT 0.0,
+                discovery_source TEXT DEFAULT '',
+                score_permission INTEGER DEFAULT 0,
+                score_ordering INTEGER DEFAULT 0,
+                red_flags TEXT DEFAULT '[]',
+                play_type TEXT DEFAULT ''
             )
         """)
+        # Migrate existing DBs: add new columns if they don't exist
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(beads)").fetchall()}
+        new_cols = [
+            ("entry_market_cap_usd", "REAL DEFAULT 0.0"),
+            ("discovery_source", "TEXT DEFAULT ''"),
+            ("score_permission", "INTEGER DEFAULT 0"),
+            ("score_ordering", "INTEGER DEFAULT 0"),
+            ("red_flags", "TEXT DEFAULT '[]'"),
+            ("play_type", "TEXT DEFAULT ''"),
+        ]
+        for col_name, col_type in new_cols:
+            if col_name not in existing_cols:
+                conn.execute(f"ALTER TABLE beads ADD COLUMN {col_name} {col_type}")
         conn.commit()
         conn.close()
 
@@ -119,12 +150,19 @@ class EdgeBank:
 **Type:** {bead.bead_type} ({bead.direction})
 **Token:** {bead.token_symbol} (`{bead.token_mint}`)
 **Amount:** {bead.amount_sol:.4f} SOL @ ${bead.price_usd:.8f}
+**Entry MCap:** ${bead.entry_market_cap_usd:,.0f}
+**Play Type:** {bead.play_type or 'unknown'}
+**Source:** {bead.discovery_source or 'unknown'}
+**Score:** permission={bead.score_permission}, ordering={bead.score_ordering}
 
 ## Thesis
 {bead.thesis}
 
 ## Signals
 {chr(10).join(f'- {s}' for s in bead.signals) if bead.signals else 'None'}
+
+## Red Flags
+{chr(10).join(f'- {f}' for f in bead.red_flags) if bead.red_flags else 'None'}
 
 ## Outcome
 - Result: {bead.outcome}
@@ -143,13 +181,18 @@ class EdgeBank:
             """INSERT OR REPLACE INTO beads
             (bead_id, timestamp, bead_type, token_mint, token_symbol, direction,
              amount_sol, price_usd, thesis, signals, outcome, pnl_pct,
-             exit_reason, market_conditions, embedding)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             exit_reason, market_conditions, embedding,
+             entry_market_cap_usd, discovery_source, score_permission,
+             score_ordering, red_flags, play_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 bead.bead_id, bead.timestamp, bead.bead_type, bead.token_mint,
                 bead.token_symbol, bead.direction, bead.amount_sol, bead.price_usd,
                 bead.thesis, json.dumps(bead.signals), bead.outcome, bead.pnl_pct,
                 bead.exit_reason, bead.market_conditions, embedding,
+                bead.entry_market_cap_usd, bead.discovery_source,
+                bead.score_permission, bead.score_ordering,
+                json.dumps(bead.red_flags), bead.play_type,
             ),
         )
         conn.commit()

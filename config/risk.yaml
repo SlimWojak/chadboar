@@ -47,10 +47,11 @@ conviction:
 
   # Graduation play limits (smaller bets × more trades = more beads = faster learning)
   graduation:
-    max_position_usd: 30       # Hard cap per graduation trade (was 50 — smaller bets, more swings)
-    max_daily_plays: 8         # Max graduation trades per day (was 3 — let the boar trade and learn)
-    bonded_stage_bonus: 5      # Extra points for freshly graduated (bonded) tokens
+    max_position_usd: 15       # Hard cap per graduation trade (was 30 — halved for cheaper bead extraction)
+    max_daily_plays: 8         # Max graduation trades per day
+    bonded_stage_bonus: 0      # Zeroed — bonded tokens are now a hard VETO (40.9% rug rate)
     max_mcap_graduation: 500000  # Graduation plays above $500k mcap are not micro-cap speed plays
+    skip_nansen: true          # Skip Nansen TGM calls — scores 0 for graduation, causes rate limit errors
 
   # Position sizing parameters
   sizing:
@@ -109,9 +110,9 @@ scalp:
   max_mcap_usd: 50000          # Only scalp sub-$50K mcap tokens
   take_profit_pct: 20           # Exit 100% at +20%
   stop_loss_pct: 0              # DISABLED — time decay is the stop loss, not price chop
-  time_decay_minutes: 15        # Force exit if no +5% move in 15 min (this IS the SL)
+  time_decay_minutes: 7         # Force exit if no +5% move in 7 min (was 15 — graduation resolves in 2-5 min, data-driven)
   max_concurrent: 3             # Max 3 open scalp positions
-  max_position_usd: 10          # $10 max per scalp (tiny learning bets)
+  max_position_usd: 5           # $5 max per scalp (was $10 — halved for cheaper bead extraction)
   slippage_bps: 500             # 5% slippage tolerance (low-liq tokens)
 
 # Circuit breakers

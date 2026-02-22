@@ -32,6 +32,12 @@ def write_bead(bead_type: str, data: dict) -> dict:
         pnl_pct=float(data.get("pnl_pct", 0)),
         exit_reason=data.get("exit_reason", ""),
         market_conditions=data.get("market_conditions", ""),
+        entry_market_cap_usd=float(data.get("entry_market_cap_usd", 0)),
+        discovery_source=data.get("discovery_source", ""),
+        score_permission=int(data.get("score_permission", 0)),
+        score_ordering=int(data.get("score_ordering", 0)),
+        red_flags=data.get("red_flags", []),
+        play_type=data.get("play_type", ""),
     )
 
     bead_id = bank.write_bead(bead)

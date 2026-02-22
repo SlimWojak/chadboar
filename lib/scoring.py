@@ -376,6 +376,22 @@ class ConvictionScorer:
                 play_type=play_type,
             )
 
+        # VETO 5: Pulse-bonded tokens (post-graduation)
+        # Data: 40.9% rug rate, -24% avg PnL, 15.9% win rate.
+        # Pre-bonding (bonding) is the play; post-bonding = fast money already exited.
+        if signals.pulse_stage == "bonded":
+            return ConvictionScore(
+                ordering_score=0,
+                permission_score=0,
+                breakdown={},
+                red_flags={"pulse_post_bonding": -100},
+                primary_sources=[],
+                recommendation="VETO",
+                position_size_sol=0.0,
+                reasoning="VETO: Post-bonding token (40.9% rug rate, -24% avg PnL — fast money already exited)",
+                play_type=play_type,
+            )
+
         # VETO 6: Graduation daily sublimit exceeded
         grad_max_daily = self.graduation_config.get('max_daily_plays', 3)
         if play_type == "graduation" and daily_graduation_count >= grad_max_daily:
@@ -601,11 +617,14 @@ class ConvictionScorer:
             permission_score -= penalty
             reasoning_parts.append(f"PULSE RED FLAG: Organic ratio {signals.pulse_organic_ratio:.2f} (-{penalty} pts)")
 
-        if signals.pulse_bundler_pct > 20:
-            penalty = 10
-            red_flags['pulse_bundler'] = -penalty
-            permission_score -= penalty
-            reasoning_parts.append(f"PULSE RED FLAG: Bundlers {signals.pulse_bundler_pct:.1f}% (-{penalty} pts)")
+        # BUNDLER PENALTY REMOVED: Data shows bundler-flagged trades have the
+        # HIGHEST win rate (40.4%) and smallest losses (-2.0%). Bundlers on PumpFun
+        # are often creators doing initial market-making — their presence correlates
+        # with tokens that have a floor. Penalty was counterproductive.
+        # if signals.pulse_bundler_pct > 20:
+        #     penalty = 10
+        #     red_flags['pulse_bundler'] = -penalty
+        #     permission_score -= penalty
 
         if signals.pulse_sniper_pct > 30:
             penalty = 10
@@ -616,28 +635,22 @@ class ConvictionScorer:
         # pulse_serial_deployer: Now a hard VETO (see VETO 4 above)
         # Kept as comment — the >5 migrations check fires as VETO before reaching here.
 
-        # FDV DEATH ZONE: $25k-100k graduation plays have -33% to -48% avg PnL
-        # Data shows $10k-25k is the sweet spot (39% win rate), above $25k drops sharply.
+        # FDV CAUTION ZONE: $25k-100k graduation plays have lower win rate (31.2%)
+        # than $10k-25k sweet spot (40.2%), but flagged trades show +2.8% avg PnL.
+        # Reduced from -15 to -5: original penalty overcorrected.
         if (play_type == "graduation"
                 and signals.entry_market_cap_usd > 25000
                 and signals.entry_market_cap_usd < 100000):
-            penalty = 15
+            penalty = 5
             red_flags['fdv_death_zone'] = -penalty
             permission_score -= penalty
             reasoning_parts.append(
-                f"FDV DEATH ZONE: ${signals.entry_market_cap_usd:,.0f} "
-                f"(graduation $25k-100k is -40% avg PnL, -15 pts)"
+                f"FDV CAUTION: ${signals.entry_market_cap_usd:,.0f} "
+                f"(graduation $25k-100k zone, -5 pts)"
             )
 
-        # POST-BONDING TRAP: pulse-bonded tokens have -45.74% avg PnL.
-        # Pre-bonding (bonding) is the play; post-bonding means the fast money already left.
-        if signals.pulse_stage == "bonded":
-            penalty = 10
-            red_flags['pulse_post_bonding'] = -penalty
-            permission_score -= penalty
-            reasoning_parts.append(
-                f"POST-BONDING: Already graduated — fast money exited (-{penalty} pts)"
-            )
+        # POST-BONDING: Now a hard VETO (see VETO 5 above).
+        # Kept as comment — the bonded check fires as VETO before reaching here.
 
         # PULSE BONUSES for accumulation play type (graduation handles these in score_pulse_quality)
         if play_type == "accumulation":
